@@ -10,6 +10,21 @@ import (
 	"testing"
 )
 
+func TestTUICanAnalyzeOwnRepository(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	args := []string{"tui", "--root", root, "--func", "terminalSupported"}
+	if err := run(context.Background(), args, strings.NewReader("q\n"), &out, io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "func terminalSupported(") {
+		t.Fatal("platform terminal helper was not displayed")
+	}
+}
+
 func TestTUIResolvesAcrossRepositoryModules(t *testing.T) {
 	root := t.TempDir()
 	for name, text := range map[string]string{

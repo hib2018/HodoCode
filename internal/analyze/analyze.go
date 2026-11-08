@@ -1,16 +1,16 @@
 // Package analyze indexes Go source and lazily inspects one function at a time.
 //
 // All modules physically inside Root are indexed without fetching dependencies.
-// shortcut: build constraints are not evaluated and _test.go, vendor, hidden
-// directories/files and symlinks are excluded; use go/packages if build-aware
-// analysis becomes necessary. Dependencies outside Root are not loaded from
-// source; unavailable type information yields unknown calls.
+// Build constraints follow go/build.Default; _test.go, vendor, hidden
+// directories/files and symlinks are excluded. Dependencies outside Root are
+// not loaded from source; unavailable type information yields unknown calls.
 package analyze
 
 import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/importer"
 	"go/parser"
 	"go/printer"
@@ -91,6 +91,13 @@ func Load(root string) (*Project, error) {
 		}
 		module := directories[filepath.Dir(filename)]
 		if module.path == "" || entry.Type()&os.ModeSymlink != 0 || strings.HasPrefix(entry.Name(), ".") || !strings.HasSuffix(filename, ".go") || strings.HasSuffix(filename, "_test.go") {
+			return nil
+		}
+		matches, matchErr := build.Default.MatchFile(filepath.Dir(filename), entry.Name())
+		if matchErr != nil {
+			return fmt.Errorf("%s: %w", filename, matchErr)
+		}
+		if !matches {
 			return nil
 		}
 		source, readErr := os.ReadFile(filename)

@@ -95,6 +95,11 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		_, err = io.WriteString(out, analyze.Mermaid(edges))
 		return err
 	case "tui":
+		if input, ok := in.(*os.File); ok && os.Getenv("TERM") != "dumb" {
+			if output, ok := out.(*os.File); ok && terminalSupported(input, output) {
+				return fullScreen(ctx, p, *name, expansions, input, output)
+			}
+		}
 		return interactive(p, *name, expansions, in, out)
 	case "flow":
 		s, err := newFlow(p, *name, expansions)

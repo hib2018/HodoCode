@@ -36,6 +36,17 @@ type Edge struct {
 	Unknown  bool
 }
 
+// CallSite records one call occurrence. Positions are physical 1-based byte
+// columns, with an exclusive EndColumn, covering only the function/method name.
+// Calls without a name have Name == "" and an empty range at the callee's start.
+// Offset is the 0-based byte offset of that range from the start of Source(id).
+type CallSite struct {
+	Edge
+	Line, Column, EndColumn int
+	Offset                  int
+	Name                    string
+}
+
 type Project struct {
 	Root      string
 	Functions map[string]Function
@@ -231,6 +242,38 @@ func (p *Project) Resolve(name string) (string, error) {
 // to indexed declarations; interface calls, function values and unresolved symbols
 // are conservative unknowns.
 func (p *Project) Calls(id string) ([]Edge, error) {
+	sites, err := p.CallSites(id)
+	if err != nil {
+		return nil, err
+	}
+	var edges []Edge
+	seen := map[Edge]bool{}
+	for _, site := range sites {
+		if !seen[site.Edge] {
+			seen[site.Edge] = true
+			edges = append(edges, site.Edge)
+		}
+	}
+	sortEdges(edges)
+	return edges, nil
+}
+
+// MainFunctions returns sorted IDs of receiver-less main functions in package main.
+func (p *Project) MainFunctions() []string {
+	var ids []string
+	for id, fn := range p.declarations {
+		if fn.Recv == nil && fn.Name.Name == "main" && p.packages[p.owners[id]][0].Name.Name == "main" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// CallSites returns all one-level call occurrences in source order, including
+// duplicates, external targets and unknowns, but not function literal bodies.
+// Type conversions and builtins are omitted, as in Calls.
+func (p *Project) CallSites(id string) ([]CallSite, error) {
 	fn, ok := p.declarations[id]
 	if !ok {
 		return nil, fmt.Errorf("function %q not found", id)
@@ -245,8 +288,8 @@ func (p *Project) Calls(id string) ([]Edge, error) {
 	// calls without a proven static target remain unknown rather than being guessed.
 	files, body := p.typeFiles(p.owners[id], fn)
 	_, _ = config.Check(p.owners[id], p.fset, files, info)
-	var edges []Edge
-	seen := map[Edge]bool{}
+	var sites []CallSite
+	sourceStart := p.fset.PositionFor(fn.Pos(), false).Offset
 	ast.Inspect(body, func(node ast.Node) bool {
 		if _, literal := node.(*ast.FuncLit); literal {
 			return false
@@ -314,14 +357,33 @@ func (p *Project) Calls(id string) ([]Edge, error) {
 			// Keep unknown labels out of the static ID namespace.
 			edge.To = "unknown: " + edge.To
 		}
-		if !seen[edge] {
-			seen[edge] = true
-			edges = append(edges, edge)
+		var name *ast.Ident
+		switch x := base.(type) {
+		case *ast.Ident:
+			name = x
+		case *ast.SelectorExpr:
+			name = x.Sel
 		}
+		pos := p.fset.PositionFor(expr.Pos(), false)
+		site := CallSite{Edge: edge, Line: pos.Line, Column: pos.Column, EndColumn: pos.Column}
+		if name != nil {
+			pos = p.fset.PositionFor(name.Pos(), false)
+			site.Line, site.Column = pos.Line, pos.Column
+			site.Name = name.Name
+			site.EndColumn = pos.Column + len(name.Name)
+		}
+		site.Offset = pos.Offset - sourceStart
+		sites = append(sites, site)
 		return true
 	})
-	sortEdges(edges)
-	return edges, nil
+	// A selector's receiver may contain calls that precede its method name.
+	sort.SliceStable(sites, func(i, j int) bool {
+		if sites[i].Line != sites[j].Line {
+			return sites[i].Line < sites[j].Line
+		}
+		return sites[i].Column < sites[j].Column
+	})
+	return sites, nil
 }
 
 func unparen(expr ast.Expr) ast.Expr {
@@ -335,7 +397,7 @@ func unparen(expr ast.Expr) ast.Expr {
 }
 
 // typeFiles exposes only the selected declaration's body, never closure bodies.
-// Calls must inspect the returned body so copied expressions match types.Info.
+// CallSites must inspect the returned body so copied expressions match types.Info.
 func (p *Project) typeFiles(pkg string, selected *ast.FuncDecl) ([]*ast.File, *ast.BlockStmt) {
 	var files []*ast.File
 	var body *ast.BlockStmt

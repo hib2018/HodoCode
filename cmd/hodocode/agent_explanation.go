@@ -23,13 +23,15 @@ type agentResult struct {
 }
 
 type agentPane struct {
-	options   agentOptions
-	visible   bool
-	texts     map[string]string
-	pending   *explain.Request
-	pendingID string
-	results   chan agentResult
-	cancel    context.CancelFunc
+	options      agentOptions
+	visible      bool
+	texts        map[string]string
+	pending      *explain.Request
+	pendingID    string
+	results      chan agentResult
+	cancel       context.CancelFunc
+	instructions map[string][]string
+	input        *agentInput
 }
 
 func newAgentPane(options agentOptions) *agentPane {
@@ -46,6 +48,16 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 	case "s":
 		a.visible = false
 		s.explanationTop = 0
+	case "i":
+		if a.cancel != nil {
+			a.visible = true
+			a.texts[s.current] = "生成中は追加指示を入力できません。完了してから i を押してください。"
+			s.explanationTop = 0
+			return true
+		}
+		if a.input == nil {
+			a.input = &agentInput{id: s.current}
+		}
 	case "e":
 		a.visible = true
 		s.explanationTop = 0
@@ -59,13 +71,14 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 				edges = append(edges, edge)
 			}
 		}
-		req, err := explain.Prepare(s.p, s.current, a.options.purpose, edges, a.options.excludes)
+		purpose := a.purpose(s.current)
+		req, err := explain.Prepare(s.p, s.current, purpose, edges, a.options.excludes)
 		if err != nil {
 			a.texts[s.current] = "解説の準備に失敗しました。\n" + err.Error()
 			return true
 		}
 		a.pending, a.pendingID = req, s.current
-		a.texts[s.current] = "送信前の確認（まだ送信していません）\ny: fxへ送信 / n:中止 / []:スクロール\n候補一覧を最後まで確認してください。\n文字列・コメントは空白化しますが、識別子などの機密情報は残り得ます。fxはOSサンドボックスではありません。送信先・料金はfx設定に従い、通信は2回です。\n目的: " + a.options.purpose + "\n\n" + req.Preview()
+		a.texts[s.current] = "送信前の確認（まだ送信していません）\ny: fxへ送信 / n:中止 / []:スクロール\n候補一覧を最後まで確認してください。\n文字列・コメントは空白化しますが、識別子などの機密情報は残り得ます。fxはOSサンドボックスではありません。送信先・料金はfx設定に従い、通信は2回です。\n目的: " + purpose + "\n\n" + req.Preview()
 	case "n":
 		if a.pendingID != s.current || a.pending == nil {
 			return false
@@ -106,7 +119,7 @@ func (s *screen) receiveAgentResult() bool {
 		if result.err != nil {
 			a.texts[result.id] = "解説に失敗しました。e:再試行\n" + result.err.Error()
 		} else {
-			a.texts[result.id] = "エージェントの解説（回答の根拠を確認してください）\ne:再生成 / s:構文解説\n\n" + result.text
+			a.texts[result.id] = "エージェントの解説（回答の根拠を確認してください）\ni:追加指示 / e:再生成 / s:構文解説\n\n" + result.text
 		}
 		if s.current == result.id {
 			s.explanationTop = 0
@@ -143,7 +156,7 @@ func (s *screen) paneLines(width, height int) []string {
 	}
 	text := s.agent.texts[s.current]
 	if text == "" {
-		text = fmt.Sprintf("エージェント解説\n%s\ne:送信前の確認 / s:構文解説", s.current)
+		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / e:送信前の確認 / s:構文解説", s.current)
 	}
 	return wrapPaneText(text, width)
 }

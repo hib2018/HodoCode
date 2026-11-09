@@ -469,6 +469,13 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if !ok {
 			decoder.escape = ""
+			if s.agentInputIdle() {
+				dirty = true
+			}
+			continue
+		}
+		if s.agentInputByte(ctx, b) {
+			dirty = true
 			continue
 		}
 		key := decoder.feed(b)

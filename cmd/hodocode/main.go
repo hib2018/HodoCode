@@ -155,6 +155,7 @@ func functionIDs(p *analyze.Project) []string {
 type flow struct {
 	p        *analyze.Project
 	edges    []analyze.Edge
+	sites    map[string][]analyze.CallSite
 	nodes    map[string]bool
 	expanded map[string]bool
 }
@@ -164,7 +165,7 @@ func newFlow(p *analyze.Project, name string, expansions []string) (*flow, error
 	if err != nil {
 		return nil, err
 	}
-	s := &flow{p: p, nodes: map[string]bool{id: true}, expanded: map[string]bool{}}
+	s := &flow{p: p, sites: map[string][]analyze.CallSite{}, nodes: map[string]bool{id: true}, expanded: map[string]bool{}}
 	if err = s.expand(id); err != nil {
 		return nil, err
 	}
@@ -186,10 +187,28 @@ func (s *flow) expand(id string) error {
 	if s.expanded[id] {
 		return nil
 	}
-	edges, err := s.p.Calls(id)
+	sites, err := s.p.CallSites(id)
 	if err != nil {
 		return err
 	}
+	s.sites[id] = sites
+	var edges []analyze.Edge
+	seen := map[analyze.Edge]bool{}
+	for _, site := range sites {
+		if !seen[site.Edge] {
+			seen[site.Edge] = true
+			edges = append(edges, site.Edge)
+		}
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].From != edges[j].From {
+			return edges[i].From < edges[j].From
+		}
+		if edges[i].To != edges[j].To {
+			return edges[i].To < edges[j].To
+		}
+		return !edges[i].Unknown && edges[j].Unknown
+	})
 	s.edges = append(s.edges, edges...)
 	s.expanded[id] = true
 	for _, e := range edges {

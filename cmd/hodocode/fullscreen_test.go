@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -36,110 +38,270 @@ func press(t *testing.T, s *screen, keys ...string) {
 	}
 }
 
+func screenProject(t *testing.T, files map[string]string) *analyze.Project {
+	t.Helper()
+	root := t.TempDir()
+	files["go.mod"] = "module example.com/screen\n\ngo 1.23\n"
+	for name, text := range files {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := analyze.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func TestFullScreenNavigation(t *testing.T) {
-	for _, keys := range [][]string{{"down", "\r", "b"}, {"j", "l", "h"}, {"down", "right", "left"}} {
-		s := testScreen(t, "Recur")
-		root := s.current
-		if len(s.flow.expanded) != 1 {
-			t.Fatal("eager expansion")
-		}
-		press(t, s, keys[0], keys[1])
-		if s.current != root || len(s.history) != 1 || len(s.flow.expanded) != 1 {
-			t.Fatal("recursive navigation or caching failed")
-		}
-		if strings.Count(s.render(100, 15, false), "Recur") < 3 {
-			t.Fatal("missing parent/current/callee")
-		}
-		press(t, s, keys[2])
-		if len(s.history) != 0 || s.selected != 1 {
-			t.Fatal("back did not restore selection")
-		}
-		press(t, s, "up", "\r")
-		if !strings.HasSuffix(s.current, ".Leaf") || len(s.flow.expanded) != 2 {
-			t.Fatal("failed to expand selected callee")
-		}
-		if len(s.choices) != 0 {
-			t.Fatal("leaf has choices")
-		}
-		press(t, s, "\r", "b")
-		if s.current != root {
-			t.Fatal("back from leaf")
+	s := testScreen(t, "Recur")
+	root := s.current
+	if len(s.sites) != 2 || s.sites[0].Name != "Recur" || s.sites[1].Name != "Leaf" || len(s.flow.expanded) != 1 {
+		t.Fatalf("source-order sites/lazy expansion: %+v", s.sites)
+	}
+	cached := s.flow.sites[root]
+	press(t, s, "\r", "\r")
+	if s.current != root || len(s.history) != 2 || len(s.flow.expanded) != 1 || &s.sites[0] != &cached[0] {
+		t.Fatal("recursive navigation did not reuse cached sites")
+	}
+	press(t, s, "b", "b", "j")
+	s.top, s.horizontal = 1, 4
+	position := s.screenPosition
+	press(t, s, "\n")
+	if !strings.HasSuffix(s.current, ".Leaf") || len(s.flow.expanded) != 2 || len(s.sites) != 0 {
+		t.Fatal("Enter did not expand the selected leaf")
+	}
+	leaf := s.screenPosition
+	press(t, s, "\r", "\n", "down", "up")
+	if s.screenPosition != leaf || len(s.history) != 1 {
+		t.Fatal("Enter/navigation without calls changed state")
+	}
+	press(t, s, "b")
+	if s.screenPosition != position || len(s.history) != 0 || &s.sites[0] != &cached[0] {
+		t.Fatalf("back did not restore selection/vertical/horizontal position: %+v", s.screenPosition)
+	}
+	press(t, s, "b")
+	if s.screenPosition != position {
+		t.Fatal("back without history changed state")
+	}
+	press(t, s, "up", "k", "down", "j", "down")
+	if s.selected != 1 || s.current != root || len(s.history) != 0 {
+		t.Fatal("selection must clamp without following calls")
+	}
+	for _, key := range []string{"q", "\x03", "\x04"} {
+		if done, err := s.key(key, 6, 30); !done || err != nil {
+			t.Fatalf("quit %q: %v, %v", key, done, err)
 		}
 	}
 }
 
-func TestFullScreenPicking(t *testing.T) {
-	s := testScreen(t, "")
-	if s.flow != nil || !s.picking {
-		t.Fatal("initial list should not expand calls")
+func TestFullScreenDefaultMainAndErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, other, want string
+	}{
+		{"unique", "package main\nfunc main() {}\n", "", ""},
+		{"absent", "package sample\nfunc main() {}\n", "", "main関数がありません"},
+		{"multiple", "package main\nfunc main() {}\n", "package main\nfunc main() {}\n", "main関数が複数"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{"main.go": tc.source}
+			if tc.other != "" {
+				files["other/main.go"] = tc.other
+			}
+			p := screenProject(t, files)
+			s, err := newScreen(p, "", nil)
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "--func") {
+					t.Fatalf("default start: %v", err)
+				}
+				return
+			}
+			if err != nil || s.current != "example.com/screen.main" || s.flow == nil || len(s.flow.expanded) != 1 {
+				t.Fatalf("automatic main: %+v, %v", s, err)
+			}
+		})
 	}
-	first := s.current
-	press(t, s, "j")
-	if s.current == first || s.rows[s.selectedRow()].id != s.current {
-		t.Fatal("preview did not follow candidate")
+	s := testScreen(t, "Recur")
+	for _, tc := range []struct {
+		name   string
+		expand []string
+	}{
+		{"missingFunction", nil}, {"Recur", []string{"missingFunction"}}, {"Recur", []string{"Hidden"}},
+	} {
+		if _, err := newScreen(s.p, tc.name, tc.expand); err == nil {
+			t.Fatalf("accepted invalid start/expansion: %+v", tc)
+		}
 	}
-	source, err := s.p.Source(s.current)
-	if err != nil || !strings.Contains(s.code[0], strings.Split(source, "\n")[0]) {
-		t.Fatal("wrong preview")
+	// Force expansion and refresh failures without modifying production source.
+	s.selected = 1
+	s.flow.nodes[s.sites[1].To] = false
+	if _, err := s.key("\r", 6, 30); err == nil || len(s.history) != 0 {
+		t.Fatal("expansion failure was swallowed or pushed history")
 	}
-	press(t, s, "l")
-	if !s.picking {
-		t.Fatal("only Enter should confirm starting point")
+	s.current = "missingFunction"
+	if err := s.refresh(); err == nil {
+		t.Fatal("refresh failure was swallowed")
+	}
+}
+
+func TestFullScreenCallHighlights(t *testing.T) {
+	p := screenProject(t, map[string]string{"main.go": `package main
+import "strings"
+type Thing struct{}
+func (Thing) Run() {}
+func Z() {}
+func A() {}
+func 日本語() {}
+func main() {
+	Z(); Z(); A(); Z() // Z() is only a comment
+	thing := Thing{}; thing.Run(); Thing.Run(thing)
+	日本語(); Z()
+	strings.TrimSpace("Z()"); missing()
+}
+`})
+	s, err := newScreen(p, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Z", "Z", "A", "Z", "Run", "Run", "日本語", "Z", "TrimSpace", "missing"}
+	if len(s.sites) != len(want) {
+		t.Fatalf("sites: %+v", s.sites)
+	}
+	for i, name := range want {
+		if s.sites[i].Name != name || s.selected != i {
+			t.Fatalf("site %d: %+v, selected=%d", i, s.sites[i], s.selected)
+		}
+		h := s.highlights[i]
+		if got := displaySlice(s.code[h.row], h.start, h.end-h.start); got != name {
+			t.Fatalf("name-only highlight %d = %q, want %q", i, got, name)
+		}
+		style := "\x1b[97;44m\x1b[1m"
+		if i >= 8 {
+			style = "\x1b[97;44m\x1b[1m\x1b[4m"
+		}
+		line := s.codeLine(h.row, 160, true)
+		if !strings.Contains(line, style+name+"\x1b[0m") || strings.Count(line, "\x1b[1m") != 1 {
+			t.Fatalf("selected name styling %d: %q", i, line)
+		}
+		if i == 0 && (!strings.Contains(line, "\x1b[30;46mZ\x1b[0m();") || !strings.Contains(line, "// Z() is only a comment")) {
+			t.Fatalf("repeated call/comment styling: %q", line)
+		}
+		if i == 4 && !strings.Contains(line, "thing.\x1b[97;44m\x1b[1mRun\x1b[0m()") {
+			t.Fatalf("receiver or punctuation included in method highlight: %q", line)
+		}
+		frame := s.render(160, 18, false)
+		for _, ansi := range []string{"\x1b[35m", "\x1b[32m", "\x1b[36m", "\x1b[90m", "\x1b[30;46m", "\x1b[30;43m", "\x1b[97;44m", "\x1b[1m", "\x1b[4m", "\x1b[0m"} {
+			if strings.Contains(frame, ansi) {
+				t.Fatalf("emphasis=false emitted %q", ansi)
+			}
+		}
+		position := fmt.Sprintf("main.go:%d:%d", s.sites[i].Line, s.sites[i].Column)
+		if !strings.Contains(frame, position) || !strings.Contains(frame, fmt.Sprintf("%d/%d", i+1, len(want))) {
+			t.Errorf("plain status missing selected position %s for %s", position, name)
+		}
+		press(t, s, "j")
+	}
+	// Clipping inside a wide name must not split a UTF-8 rune or overflow cells.
+	s.selected = 6
+	h := s.highlights[6]
+	for _, start := range []int{h.start - 1, h.start + 1, h.end - 1} {
+		s.horizontal = start
+		got := s.codeLine(h.row, 4, true)
+		plain := strings.NewReplacer("\x1b[97;44m", "", "\x1b[30;46m", "", "\x1b[1m", "", "\x1b[0m", "").Replace(got)
+		if plain != displaySlice(s.code[h.row], start, 4) || displayWidth(plain) != 4 {
+			t.Fatalf("Unicode/tab clip at %d: %q", start, got)
+		}
 	}
 	press(t, s, "\r")
-	if s.picking || s.flow == nil || len(s.flow.expanded) != 1 {
-		t.Fatal("starting point not confirmed")
+	if s.current != "example.com/screen.日本語" {
+		t.Fatal("Unicode function navigation failed")
+	}
+	press(t, s, "b")
+	s.selected = 4
+	press(t, s, "\r")
+	if s.current != "example.com/screen.Thing.Run" {
+		t.Fatal("method navigation failed")
 	}
 }
 
-func TestFullScreenDetails(t *testing.T) {
-	for _, tc := range []struct{ name, summary, detail string }{
-		{"helper.Work", "外部ソース: 1件", "strings.TrimSpace（外部ソース・選択不可）"},
-		{"Unchecked", "呼び出し先不明: 1件", "missingSymbol（呼び出し先不明・選択不可）"},
+func TestFullScreenUnavailableCalls(t *testing.T) {
+	for _, tc := range []struct{ name, call, reason string }{
+		{"helper.Work", "TrimSpace", "対象範囲内にソースがない"},
+		{"Unchecked", "missingSymbol", "呼び出し先を静的に特定できない"},
 	} {
-		s := testScreen(t, tc.name)
-		before := s.render(160, 16, false)
-		if !strings.Contains(before, tc.summary) || len(s.choices) != 0 {
-			t.Fatal(before)
-		}
-		press(t, s, "d")
-		after := s.render(160, 16, false)
-		if !strings.Contains(after, tc.detail) || len(s.choices) != 0 {
-			t.Fatal(after)
-		}
-		press(t, s, "d")
-		if s.render(160, 16, false) != before {
-			t.Fatal("details toggle did not restore view")
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			s := testScreen(t, tc.name)
+			if len(s.sites) != 1 || s.sites[0].Name != tc.call {
+				t.Fatalf("unavailable call must be selectable: %+v", s.sites)
+			}
+			before := s.screenPosition
+			press(t, s, "\r", "\n", "\t", "d")
+			if s.screenPosition != before || len(s.history) != 0 || len(s.flow.expanded) != 1 {
+				t.Fatal("unavailable Enter/Tab/d changed state")
+			}
+			frame := s.render(160, 16, true)
+			if !strings.Contains(frame, tc.reason) || !strings.Contains(frame, "\x1b[97;44m\x1b[1m\x1b[4m"+tc.call+"\x1b[0m") {
+				t.Fatal(frame)
+			}
+		})
 	}
 }
 
 func TestFullScreenScrollAndResize(t *testing.T) {
 	s := testScreen(t, "Entry")
-	s.follow(6)
-	selected := s.selected
-	press(t, s, "\t", "j", "l")
-	if s.top != 1 || s.horizontal != 4 || s.selected != selected || s.left != 0 {
-		t.Fatalf("independent source scroll: %+v", s.screenPosition)
+	root := s.current
+	before := s.screenPosition
+	press(t, s, "\t", "d", "b")
+	if s.screenPosition != before {
+		t.Fatal("Tab/d/back without history must be no-ops")
 	}
-	rightTop, rightX := s.top, s.horizontal
-	press(t, s, "\t", "j", "j", "j", "j", "j")
-	s.follow(3)
-	if s.top != rightTop || s.horizontal != rightX || s.left == 0 {
-		t.Fatalf("independent hierarchy scroll: %+v", s.screenPosition)
+	for _, key := range []string{"right", "l", "left", "h"} {
+		previous := s.screenPosition
+		press(t, s, key)
+		want := previous.horizontal + 4
+		if key == "left" || key == "h" {
+			want = max(0, previous.horizontal-4)
+		}
+		if s.horizontal != want || s.top != previous.top || s.selected != previous.selected || s.current != root || len(s.history) != 0 {
+			t.Fatalf("horizontal-only key %q: %+v", key, s.screenPosition)
+		}
 	}
-	current, choice := s.current, s.rows[s.selectedRow()].id
-	s.render(41, 8, false)
-	s.follow(18)
-	frame := s.render(120, 20, false)
-	if s.current != current || s.rows[s.selectedRow()].id != choice {
-		t.Fatal("resize changed selected function")
+	press(t, s, "pagedown")
+	if s.top != 6 || s.selected != before.selected {
+		t.Fatalf("page height must be code body height: %+v", s.screenPosition)
 	}
-	if !strings.Contains(frame, "main.go:12-32") || !strings.Contains(frame, "13 │") {
-		t.Fatal(frame)
+	press(t, s, "pageup", "pageup")
+	if s.top != 0 {
+		t.Fatal("page-up did not clamp")
+	}
+	for range 10 {
+		press(t, s, "pagedown", "right")
+	}
+	if s.top != len(s.code)-6 {
+		t.Fatal("page-down did not clamp")
+	}
+	s.selected = len(s.sites) - 1
+	s.follow(3, 12)
+	h := s.highlights[s.selected]
+	if h.row < s.top || h.row >= s.top+3 || h.start < s.horizontal || h.end > s.horizontal+12 {
+		t.Fatalf("selection not visible: %+v highlight=%+v", s.screenPosition, h)
+	}
+	s.selected = 0
+	s.follow(3, 2)
+	h = s.highlights[0]
+	if s.horizontal != h.start || h.row < s.top || h.row >= s.top+3 {
+		t.Fatal("long name should follow from its beginning")
 	}
 	for _, size := range [][2]int{{41, 8}, {42, 8}, {80, 15}, {101, 12}} {
-		frame = s.render(size[0], size[1], false)
+		s.follow(size[1]-3, size[0])
+		position := s.screenPosition
+		frame := s.render(size[0], size[1], false)
+		rows := 0
 		for i, line := range strings.Split(frame, "\x1b[") {
 			if i == 0 {
 				continue
@@ -148,63 +310,71 @@ func TestFullScreenScrollAndResize(t *testing.T) {
 			if !ok || line == "" {
 				continue
 			}
+			rows++
 			if got := displayWidth(line); got != size[0] {
 				t.Fatalf("row width=%d, want %d: %q", got, size[0], line)
 			}
 		}
+		if rows != size[1] || s.current != root || s.selected != position.selected || !strings.Contains(frame, "main.go:12-32") {
+			t.Fatalf("header + height-3 body + status/help: rows=%d frame=%q", rows, frame)
+		}
 	}
-	narrow := s.render(40, 7, false)
-	if !strings.Contains(narrow, "端末を広げてください") {
+	if narrow := s.render(40, 7, false); !strings.Contains(narrow, "端末を広げてください") {
 		t.Fatal(narrow)
-	}
-	if strings.Contains(s.render(100, 12, false), "\x1b[1m") {
-		t.Fatal("NO_COLOR ignored")
-	}
-	if !strings.Contains(s.render(100, 12, true), "\x1b[1m") {
-		t.Fatal("current position not emphasized")
 	}
 }
 
-func TestFullScreenLeftPageScroll(t *testing.T) {
-	s := testScreen(t, "")
-	press(t, s, "pagedown")
-	if s.left == 0 || s.selectedRow() < s.left || s.selectedRow() >= s.left+6 {
-		t.Fatal("left pane did not scroll with a visible selection")
+func TestFullScreenLoopBodyHeight(t *testing.T) {
+	s := testScreen(t, "Entry")
+	input := []byte("\x1b[6~q")
+	read := func() (byte, bool, error) {
+		b := input[0]
+		input = input[1:]
+		return b, true, nil
 	}
-	if s.current != s.rows[s.selectedRow()].id {
-		t.Fatal("preview did not follow paged selection")
+	if err := screenLoop(context.Background(), s, io.Discard, read, func() (int, int, error) {
+		return 80, 12, nil
+	}, false); err != nil {
+		t.Fatal(err)
 	}
-	press(t, s, "pageup")
-	if s.left != 0 {
-		t.Fatal("left page-up failed")
+	if s.top != 9 || s.selected != 0 {
+		t.Fatalf("loop must pass height-3 to page keys: %+v", s.screenPosition)
 	}
-	press(t, s, "\t", "pagedown")
-	if s.left != 0 {
-		t.Fatal("right scroll affected left pane")
+}
+
+func TestFullScreenRefreshUsesCachedSites(t *testing.T) {
+	s := testScreen(t, "Recur")
+	cached := append([]analyze.CallSite(nil), s.sites...)
+	// A deliberately narrowed cache distinguishes refresh from a fresh analysis.
+	s.flow.sites[s.current] = s.flow.sites[s.current][1:]
+	s.selected = 99
+	if err := s.refresh(); err != nil {
+		t.Fatal(err)
+	}
+	if s.selected != 0 || !reflect.DeepEqual(s.sites, cached[1:]) || &s.sites[0] != &s.flow.sites[s.current][0] {
+		t.Fatal("refresh did not use the flow cache and clamp selection")
 	}
 }
 
 func TestFullScreenCRLFSource(t *testing.T) {
-	root := t.TempDir()
-	for name, text := range map[string]string{
-		"go.mod":  "module example.com/crlf\n\ngo 1.23\n",
-		"main.go": "package example\r\nfunc Work() {\r\n\tprintln(`日本語`)\r\n}\r\n",
-	} {
-		if err := os.WriteFile(filepath.Join(root, name), []byte(text), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	p, err := analyze.Load(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := screenProject(t, map[string]string{
+		"main.go": "package example\r\nfunc Work() {\r\n\t日本語(); 日本語()\r\n}\r\nfunc 日本語() {}\r\n",
+	})
 	s, err := newScreen(p, "Work", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	frame := s.render(120, 12, false)
-	if strings.Contains(frame, "�") || !strings.Contains(frame, "3 │") || !strings.Contains(frame, "println(`日本語`)") {
+	if strings.Contains(frame, "�") || !strings.Contains(frame, "3 │") || !strings.Contains(frame, "日本語(); 日本語()") {
 		t.Fatal(frame)
+	}
+	if len(s.highlights) != 2 {
+		t.Fatalf("CRLF call sites: %+v", s.sites)
+	}
+	for _, h := range s.highlights {
+		if got := displaySlice(s.code[h.row], h.start, h.end-h.start); got != "日本語" {
+			t.Fatalf("CRLF highlight offset: %q", got)
+		}
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"syscall"
 	"unicode"
@@ -14,51 +13,46 @@ import (
 	"github.com/hib2018/HodoCode/internal/analyze"
 )
 
-type treeRow struct {
-	text, id string
-	current  bool
+type screenPosition struct {
+	current                   string
+	selected, top, horizontal int
 }
 
-type screenPosition struct {
-	current                         string
-	selected, left, top, horizontal int
+type callHighlight struct {
+	row, start, end int
 }
 
 type screen struct {
-	p          *analyze.Project
-	flow       *flow
-	expansions []string
+	p    *analyze.Project
+	flow *flow
 	screenPosition
-	history                 []screenPosition
-	picking, right, details bool
-	rows                    []treeRow
-	choices                 []int
-	code                    []string
-	location                string
+	history    []screenPosition
+	sites      []analyze.CallSite
+	highlights []callHighlight
+	code       []string
+	syntax     [][]syntaxHighlight
+	location   string
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
-	s := &screen{p: p, expansions: expansions, picking: name == ""}
-	if s.picking {
-		for _, id := range functionIDs(p) {
-			s.choices = append(s.choices, len(s.rows))
-			s.rows = append(s.rows, treeRow{text: id, id: id})
+	if name == "" {
+		mains := p.MainFunctions()
+		if len(mains) == 0 {
+			return nil, fmt.Errorf("package mainのmain関数がありません。--funcで起点を指定してください")
 		}
-		if len(s.rows) == 0 {
-			return nil, fmt.Errorf("no functions found")
+		if len(mains) != 1 {
+			return nil, fmt.Errorf("main関数が複数あります。--funcで起点を指定してください: %s", strings.Join(mains, ", "))
 		}
-		s.current = s.rows[0].id
-	} else {
-		id, err := p.Resolve(name)
-		if err != nil {
-			return nil, err
-		}
-		s.current = id
-		f, err := newFlow(p, id, expansions)
-		if err != nil {
-			return nil, err
-		}
-		s.flow = f
+		name = mains[0]
+	}
+	f, err := newFlow(p, name, expansions)
+	if err != nil {
+		return nil, err
+	}
+	s := &screen{p: p, flow: f, screenPosition: screenPosition{current: name}}
+	s.current, err = p.Resolve(name)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.refresh(); err != nil {
 		return nil, err
@@ -67,64 +61,8 @@ func newScreen(p *analyze.Project, name string, expansions []string) (*screen, e
 }
 
 func (s *screen) refresh() error {
-	if !s.picking {
-		s.rows = nil
-		s.choices = nil
-		visible := []string{s.current}
-		if len(s.history) > 0 {
-			visible = append(visible, s.history[len(s.history)-1].current)
-		}
-		var children []analyze.Edge
-		external, unknown := 0, 0
-		for _, e := range s.flow.edges {
-			if e.From != s.current {
-				continue
-			}
-			_, local := s.p.Functions[e.To]
-			if e.Unknown {
-				unknown++
-			} else {
-				visible = append(visible, e.To)
-				if !local {
-					external++
-				}
-			}
-			if s.details || (!e.Unknown && local) {
-				children = append(children, e)
-			}
-		}
-		sort.Slice(children, func(i, j int) bool { return children[i].To < children[j].To })
-		labels := treeLabels(s.current, visible)
-		indent, prefix := "", ""
-		if len(s.history) > 0 {
-			s.rows = append(s.rows, treeRow{text: labels[s.history[len(s.history)-1].current]})
-			indent, prefix = "   ", "└─ "
-		}
-		s.rows = append(s.rows, treeRow{text: prefix + currentLabel(labels[s.current], false), current: true})
-		for i, e := range children {
-			branch := "├─ "
-			if i == len(children)-1 {
-				branch = "└─ "
-			}
-			row := treeRow{text: indent + branch}
-			_, local := s.p.Functions[e.To]
-			switch {
-			case e.Unknown:
-				row.text += e.To + "（呼び出し先不明・選択不可）"
-			case !local:
-				row.text += labels[e.To] + "（外部ソース・選択不可）"
-			default:
-				row.text += labels[e.To]
-				row.id = e.To
-				s.choices = append(s.choices, len(s.rows))
-			}
-			s.rows = append(s.rows, row)
-		}
-		if external+unknown > 0 && !s.details {
-			s.rows = append(s.rows, treeRow{text: fmt.Sprintf("%s   外部ソース: %d件、呼び出し先不明: %d件（dで詳細表示）", indent, external, unknown)})
-		}
-	}
-	s.selected = max(0, min(s.selected, len(s.choices)-1))
+	s.sites = s.flow.sites[s.current]
+	s.selected = max(0, min(s.selected, len(s.sites)-1))
 	source, err := s.p.Source(s.current)
 	if err != nil {
 		return err
@@ -132,150 +70,143 @@ func (s *screen) refresh() error {
 	fn := s.p.Functions[s.current]
 	s.location = fmt.Sprintf("%s:%d-%d", fn.File, fn.Line, fn.End)
 	s.code = nil
-	for i, line := range strings.Split(source, "\n") {
-		s.code = append(s.code, fmt.Sprintf("%d │ %s", fn.Line+i, strings.TrimSuffix(line, "\r")))
+	s.syntax = sourceHighlights(source, fn.Line)
+	s.highlights = make([]callHighlight, len(s.sites))
+	offset := 0
+	for row, raw := range strings.Split(source, "\n") {
+		prefix := fmt.Sprintf("%d │ ", fn.Line+row)
+		line := prefix + strings.TrimSuffix(raw, "\r")
+		s.code = append(s.code, line)
+		for i, site := range s.sites {
+			if site.Line != fn.Line+row {
+				continue
+			}
+			column := site.Offset - offset
+			if column < 0 || column+len(site.Name) > len(raw) {
+				continue
+			}
+			start := displayWidth(prefix + raw[:column])
+			end := displayWidth(prefix + raw[:column+len(site.Name)])
+			s.highlights[i] = callHighlight{row: row, start: start, end: end}
+		}
+		offset += len(raw) + 1
 	}
 	return nil
 }
 
-func (s *screen) selectedRow() int {
-	if len(s.choices) == 0 {
-		return -1
+func (s *screen) reason(site analyze.CallSite) string {
+	if site.Unknown {
+		return "呼び出し先を静的に特定できない"
 	}
-	return s.choices[s.selected]
+	if _, ok := s.p.Functions[site.To]; !ok {
+		return "対象範囲内にソースがない"
+	}
+	return ""
 }
 
-func (s *screen) follow(height int) {
-	if row := s.selectedRow(); row >= 0 {
-		if row < s.left {
-			s.left = row
-		}
-		if row >= s.left+height {
-			s.left = row - height + 1
-		}
+func (s *screen) follow(height, width int) {
+	if len(s.highlights) == 0 {
+		return
 	}
-	s.left = max(0, min(s.left, max(0, len(s.rows)-height)))
+	h := s.highlights[s.selected]
+	if h.row < s.top {
+		s.top = h.row
+	}
+	if h.row >= s.top+height {
+		s.top = h.row - height + 1
+	}
+	s.top = max(0, min(s.top, max(0, len(s.code)-height)))
+	if h.start < s.horizontal {
+		s.horizontal = h.start
+	}
+	if h.end > s.horizontal+width {
+		s.horizontal = max(0, h.end-width)
+	}
+	// A name wider than the viewport is shown from its beginning.
+	if h.end-h.start > width {
+		s.horizontal = h.start
+	}
 }
 
 func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 	switch key {
 	case "q", "\x03", "\x04":
 		return true, nil
-	case "\t":
-		s.right = !s.right
-		return false, nil
-	case "d":
-		if !s.picking {
-			s.details = !s.details
-			if err := s.refresh(); err != nil {
-				return false, err
-			}
-			s.follow(height)
-		}
-		return false, nil
-	}
-	if s.right {
-		switch key {
-		case "up", "k":
-			s.top = max(0, s.top-1)
-		case "down", "j":
-			s.top = min(max(0, len(s.code)-height), s.top+1)
-		case "pageup":
-			s.top = max(0, s.top-height)
-		case "pagedown":
-			s.top = min(max(0, len(s.code)-height), s.top+height)
-		case "left", "h":
-			s.horizontal = max(0, s.horizontal-4)
-		case "right", "l":
-			longest := 0
-			for _, line := range s.code {
-				longest = max(longest, displayWidth(line))
-			}
-			s.horizontal = min(max(0, longest-codeWidth), s.horizontal+4)
-		}
-		return false, nil
-	}
-	switch key {
 	case "up", "k", "down", "j":
 		delta := 1
 		if key == "up" || key == "k" {
 			delta = -1
 		}
-		s.selected = max(0, min(len(s.choices)-1, s.selected+delta))
-		if s.picking {
-			s.current = s.rows[s.selectedRow()].id
-			s.top = 0
-			s.horizontal = 0
-			if err := s.refresh(); err != nil {
-				return false, err
-			}
+		s.selected = max(0, min(len(s.sites)-1, s.selected+delta))
+		s.follow(height, codeWidth)
+	case "pageup":
+		s.top = max(0, s.top-height)
+	case "pagedown":
+		s.top = min(max(0, len(s.code)-height), s.top+height)
+	case "left", "h":
+		s.horizontal = max(0, s.horizontal-4)
+	case "right", "l":
+		longest := 0
+		for _, line := range s.code {
+			longest = max(longest, displayWidth(line))
 		}
-		s.follow(height)
-	case "pageup", "pagedown":
-		if key == "pageup" {
-			s.left = max(0, s.left-height)
-		} else {
-			s.left = min(max(0, len(s.rows)-height), s.left+height)
-		}
-		if row := s.selectedRow(); row < s.left || row >= s.left+height {
-			for i, row := range s.choices {
-				if row >= s.left && row < s.left+height {
-					s.selected = i
-					if key == "pagedown" {
-						break
-					}
-				}
-			}
-		}
-		if s.picking {
-			s.current = s.rows[s.selectedRow()].id
-			s.top, s.horizontal = 0, 0
-			return false, s.refresh()
-		}
-	case "b", "h", "left":
+		s.horizontal = min(max(0, longest-codeWidth), s.horizontal+4)
+	case "b":
 		if len(s.history) > 0 {
 			s.screenPosition = s.history[len(s.history)-1]
 			s.history = s.history[:len(s.history)-1]
 			return false, s.refresh()
 		}
-	case "\r", "\n", "l", "right":
-		row := s.selectedRow()
-		// Paging through non-selectable details must not activate an off-screen item.
-		if row < s.left || row >= s.left+height {
+	case "\r", "\n":
+		if len(s.sites) == 0 {
 			return false, nil
 		}
-		if s.picking {
-			// Only Enter confirms the starting point.
-			if key != "\r" && key != "\n" {
-				return false, nil
-			}
-			f, err := newFlow(s.p, s.current, s.expansions)
-			if err != nil {
-				return false, err
-			}
-			s.flow = f
-			s.picking = false
-			s.selected = 0
-			s.left = 0
-			s.top = 0
-			s.horizontal = 0
-		} else {
-			id := s.rows[row].id
-			if err := s.flow.expand(id); err != nil {
-				return false, err
-			}
-			s.history = append(s.history, s.screenPosition)
-			s.screenPosition = screenPosition{current: id}
+		site := s.sites[s.selected]
+		if s.reason(site) != "" {
+			return false, nil
 		}
+		if err := s.flow.expand(site.To); err != nil {
+			return false, err
+		}
+		s.history = append(s.history, s.screenPosition)
+		s.screenPosition = screenPosition{current: site.To}
 		if err := s.refresh(); err != nil {
 			return false, err
 		}
-		s.follow(height)
+		s.follow(height, codeWidth)
 	}
 	return false, nil
 }
 
-func (s *screen) render(width, height int, bold bool) string {
+func (s *screen) codeLine(row, width int, emphasis bool) string {
+	line := s.code[row]
+	if !emphasis {
+		return displaySlice(line, s.horizontal, width)
+	}
+	var spans []syntaxHighlight
+	if row < len(s.syntax) {
+		spans = append(spans, s.syntax[row]...)
+	}
+	for i, h := range s.highlights {
+		if h.row != row || h.end <= h.start {
+			continue
+		}
+		style := "\x1b[30;46m"
+		if s.reason(s.sites[i]) != "" {
+			style = "\x1b[30;43m\x1b[4m"
+		}
+		if i == s.selected {
+			style = "\x1b[97;44m\x1b[1m"
+			if s.reason(s.sites[i]) != "" {
+				style += "\x1b[4m"
+			}
+		}
+		spans = append(spans, syntaxHighlight{start: h.start, end: h.end, style: style})
+	}
+	return styledSlice(line, s.horizontal, width, spans)
+}
+
+func (s *screen) render(width, height int, emphasis bool) string {
 	var b strings.Builder
 	b.WriteString("\x1b[H")
 	if width < 41 || height < 8 {
@@ -283,60 +214,36 @@ func (s *screen) render(width, height int, bold bool) string {
 		b.WriteString("\x1b[J")
 		return b.String()
 	}
-	leftWidth := (width - 1) / 2
-	rightWidth := width - 1 - leftWidth
-	body := height - 2
-	s.left = max(0, min(s.left, max(0, len(s.rows)-body)))
+	body := height - 3
 	s.top = max(0, min(s.top, max(0, len(s.code)-body)))
-	// Keep the source viewport valid when the terminal grows.
 	longest := 0
 	for _, line := range s.code {
 		longest = max(longest, displayWidth(line))
 	}
-	s.horizontal = max(0, min(s.horizontal, max(0, longest-rightWidth)))
-	title := "呼び出し階層"
-	if s.picking {
-		title = "起点を選択（Enterで確定）"
-	}
-	if !s.right {
-		title = "[操作中] " + title
-	}
-	codeTitle := s.location
-	if s.right {
-		codeTitle = "[操作中] " + codeTitle
-	}
-	writeRow := func(n int, left, right string, emphasis bool) {
+	s.horizontal = max(0, min(s.horizontal, max(0, longest-width)))
+	writeRow := func(n int, text string) {
 		fmt.Fprintf(&b, "\x1b[%d;1H", n)
-		l := displaySlice(left, 0, leftWidth)
-		if bold && emphasis {
-			b.WriteString("\x1b[1m")
-		}
-		b.WriteString(l)
-		if bold && emphasis {
-			b.WriteString("\x1b[0m")
-		}
-		b.WriteString("│")
-		b.WriteString(displaySlice(right, 0, rightWidth))
+		b.WriteString(displaySlice(text, 0, width))
 	}
-	writeRow(1, title, codeTitle, false)
+	writeRow(1, s.location)
 	for i := 0; i < body; i++ {
-		left, right := "", ""
-		emphasis := false
-		if row := s.left + i; row < len(s.rows) {
-			marker := "  "
-			if row == s.selectedRow() {
-				marker = "> "
-			}
-			left = marker + s.rows[row].text
-			emphasis = s.rows[row].current
-		}
+		fmt.Fprintf(&b, "\x1b[%d;1H", i+2)
 		if row := s.top + i; row < len(s.code) {
-			right = displaySlice(s.code[row], s.horizontal, rightWidth)
+			b.WriteString(s.codeLine(row, width, emphasis))
+		} else {
+			b.WriteString(strings.Repeat(" ", width))
 		}
-		writeRow(i+2, left, right, emphasis)
 	}
-	fmt.Fprintf(&b, "\x1b[%d;1H", height)
-	b.WriteString(displaySlice("Tab:切替 ↑↓/kj:選択・縦移動 Enter/l:進む b/h:戻る 右:h/l横移動 PgUp/Dn:スクロール d:詳細 q:終了", 0, width))
+	status := "呼び出し箇所なし"
+	if len(s.sites) > 0 {
+		site := s.sites[s.selected]
+		status = fmt.Sprintf("%d/%d %s:%d:%d %s", s.selected+1, len(s.sites), s.p.Functions[s.current].File, site.Line, site.Column, site.To)
+		if reason := s.reason(site); reason != "" {
+			status = fmt.Sprintf("%d/%d %s (%s:%d:%d %s)", s.selected+1, len(s.sites), reason, s.p.Functions[s.current].File, site.Line, site.Column, site.Name)
+		}
+	}
+	writeRow(height-1, status)
+	writeRow(height, "↑↓/kj:選択 Enter:進む b:戻る ←→/hl:横 PgUp/Dn:縦 q:終了")
 	return b.String()
 }
 
@@ -470,7 +377,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if width != lastWidth || height != lastHeight {
 			if height >= 8 && width >= 41 {
-				s.follow(height - 2)
+				s.follow(height-3, width)
 			}
 			dirty = true
 			lastWidth, lastHeight = width, height
@@ -502,7 +409,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			}
 			continue
 		}
-		done, err := s.key(key, height-2, width-1-(width-1)/2)
+		done, err := s.key(key, height-3, width)
 		if err != nil {
 			return err
 		}

@@ -15,9 +15,12 @@ import (
 )
 
 func TestFullScreenTerminal(t *testing.T) {
-	for _, mode := range []string{"q", "Ctrl+C", "context cancellation", "TERM=dumb", "redirected input", "redirected output"} {
+	for _, mode := range []string{"q", "Ctrl+C", "context cancellation", "NO_COLOR", "TERM=dumb", "redirected input", "redirected output"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("TERM", "xterm-256color")
+			if mode == "NO_COLOR" {
+				t.Setenv("NO_COLOR", "")
+			}
 			if mode == "TERM=dumb" {
 				t.Setenv("TERM", "dumb")
 			}
@@ -128,7 +131,7 @@ func TestFullScreenTerminal(t *testing.T) {
 					t.Fatal(err)
 				}
 				text := transcript.String()
-				ready := strings.Contains(text, terminalScreenEnter) && strings.Contains(text, "Tab:")
+				ready := strings.Contains(text, terminalScreenEnter) && strings.Contains(text, "Enter:進む")
 				if fallback {
 					ready = strings.Contains(text, "qで終了 > ")
 				}
@@ -166,8 +169,12 @@ func TestFullScreenTerminal(t *testing.T) {
 			}
 			terminalAssertRestored(t, in, original)
 			text := transcript.String()
+			plain := strings.NewReplacer("\x1b[36m", "", "\x1b[33m", "", "\x1b[1m", "", "\x1b[4m", "", "\x1b[7m", "", "\x1b[0m", "").Replace(text)
+			if mode == "NO_COLOR" && plain != text {
+				t.Error("NO_COLOR emitted source emphasis")
+			}
 			for _, want := range []string{"main.go:34-37", "func Recur()", "Recur()", "Leaf()"} {
-				if !strings.Contains(text, want) {
+				if !strings.Contains(plain, want) {
 					t.Errorf("output missing %q: %q", want, text)
 				}
 			}
@@ -187,9 +194,14 @@ func TestFullScreenTerminal(t *testing.T) {
 				if !strings.HasPrefix(text, terminalScreenEnter) || !strings.HasSuffix(text, terminalScreenLeave) {
 					t.Errorf("alternate screen/cursor not entered and restored: %q", text)
 				}
-				// The header's divider is separate from the source line-number bars.
-				if !strings.Contains(text, "│main.go:34-37") {
-					t.Error("source pane location and vertical divider missing")
+				if !strings.Contains(text, "\x1b[1;1Hmain.go:34-37") || !strings.Contains(plain, "35 │") {
+					t.Error("source header or line numbers missing")
+				}
+				if strings.Contains(plain, "Tab:") || strings.Contains(plain, "│main.go:34-37") {
+					t.Error("obsolete pane divider/help still rendered")
+				}
+				if mode == "NO_COLOR" && !strings.Contains(text, "main.go:35:2") {
+					t.Error("plain status missing selected call position")
 				}
 			}
 

@@ -34,6 +34,7 @@ type screen struct {
 	syntax       [][]syntaxHighlight
 	location     string
 	explanations []syntaxExplanation
+	agent        *agentPane
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -235,7 +236,7 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		b.WriteString(displaySlice(text, 0, width))
 	}
 	writeRow(1, s.location)
-	notes := s.explanationLines(noteWidth, body)
+	notes := s.paneLines(noteWidth, body)
 	s.explanationTop = min(s.explanationTop, max(0, len(notes)-body))
 	for i := 0; i < body; i++ {
 		fmt.Fprintf(&b, "\x1b[%d;1H", i+2)
@@ -260,7 +261,7 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		}
 	}
 	writeRow(height-1, status)
-	writeRow(height, "↑↓/kj:選択 Enter:進む b:戻る ←→/hl:横 PgUp/Dn:縦 []:解説 q:終了")
+	writeRow(height, "e:AI解説 s:構文 []:解説スクロール ↑↓:選択 Enter:進む b:戻る ←→:横 PgUp/Dn:縦 q:終了")
 	return b.String()
 }
 
@@ -369,11 +370,12 @@ func (d *keyDecoder) feed(b byte) string {
 	return string(b)
 }
 
-func fullScreen(ctx context.Context, p *analyze.Project, name string, expansions []string, in, out *os.File) error {
+func fullScreen(ctx context.Context, p *analyze.Project, name string, expansions []string, in, out *os.File, options agentOptions) error {
 	s, err := newScreen(p, name, expansions)
 	if err != nil {
 		return err
 	}
+	s.agent = newAgentPane(options)
 	_, noColor := os.LookupEnv("NO_COLOR")
 	return withTerminal(in, out, func(read func() (byte, bool, error), size func() (int, int, error)) error {
 		return screenLoop(ctx, s, out, read, size, !noColor)
@@ -381,12 +383,20 @@ func fullScreen(ctx context.Context, p *analyze.Project, name string, expansions
 }
 
 func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte, bool, error), size func() (int, int, error), bold bool) error {
+	defer func() {
+		if s.agent != nil && s.agent.cancel != nil {
+			s.agent.cancel()
+		}
+	}()
 	decoder := keyDecoder{}
 	lastWidth, lastHeight := 0, 0
 	dirty := true
 	for {
 		if ctx.Err() != nil {
 			return nil
+		}
+		if s.receiveAgentResult() {
+			dirty = true
 		}
 		width, height, err := size()
 		if err != nil {
@@ -424,6 +434,10 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			if key == "q" || key == "\x03" || key == "\x04" {
 				return nil
 			}
+			continue
+		}
+		if s.agentKey(ctx, key) {
+			dirty = true
 			continue
 		}
 		done, err := s.key(key, height-3, screenCodeWidth(width))

@@ -59,11 +59,17 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if command == "flow" || command == "tui" {
 		fs.Var(&expansions, "expand", "reachable function to expand one level (repeatable)")
 	}
-	if command == "explain" {
-		purpose = fs.String("purpose", "", "analysis purpose (sent verbatim; do not include secrets)")
+	if command == "explain" || command == "tui" {
+		defaultPurpose := ""
+		if command == "tui" {
+			defaultPurpose = "表示中の関数の役割・処理の流れ・構文の意味と注意点を、初心者にもわかるように説明してください。"
+		}
+		purpose = fs.String("purpose", defaultPurpose, "analysis purpose (sent verbatim; do not include secrets)")
 		fs.Var(&excludes, "exclude", "relative filepath.Match pattern or directory prefix (repeatable; no **)")
-		send = fs.Bool("send", false, "send metadata and sanitized selected snippets to fx after auditing preview")
 		timeout = fs.Duration("timeout", 2*time.Minute, "total timeout for both fx requests")
+	}
+	if command == "explain" {
+		send = fs.Bool("send", false, "send metadata and sanitized selected snippets to fx after auditing preview")
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -95,9 +101,12 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		_, err = io.WriteString(out, analyze.Mermaid(edges))
 		return err
 	case "tui":
+		if *timeout <= 0 {
+			return fmt.Errorf("timeout must be positive")
+		}
 		if input, ok := in.(*os.File); ok && os.Getenv("TERM") != "dumb" {
 			if output, ok := out.(*os.File); ok && terminalSupported(input, output) {
-				return fullScreen(ctx, p, *name, expansions, input, output)
+				return fullScreen(ctx, p, *name, expansions, input, output, agentOptions{runner: runner, purpose: *purpose, excludes: excludes, timeout: *timeout})
 			}
 		}
 		return interactive(p, *name, expansions, in, out)

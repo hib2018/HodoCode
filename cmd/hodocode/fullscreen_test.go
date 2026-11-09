@@ -206,15 +206,15 @@ func TestFullScreenCursorRightPaneCoupling(t *testing.T) {
 		s.explanationTop = 3
 		press(t, s, tc.key)
 		notes := strings.Join(s.paneLines(200, 6), "\n")
-		position := fmt.Sprintf("%d行 %d列: %s:", s.p.Functions[s.current].Line+s.cursorRow, s.cursorColumn+1, tc.label)
-		if s.explanationTop != 0 || !strings.Contains(notes, position) {
+		position := fmt.Sprintf("%d行 %d列", s.p.Functions[s.current].Line+s.cursorRow, s.cursorColumn+1)
+		if s.explanationTop != 0 || !strings.Contains(notes, "\n"+tc.label+"\n"+position+"\n") {
 			t.Fatalf("key %q: pane must follow cursor and reset scroll: %q", tc.key, notes)
 		}
 		if s.selected != 0 || len(s.history) != 0 {
 			t.Fatal("syntax navigation must not follow or discard the selected call")
 		}
-		if frame := s.render(240, 12, false); !strings.Contains(frame, position) {
-			t.Fatalf("rendered right pane missing cursor explanation %q: %q", position, frame)
+		if frame := s.render(240, 12, false); !strings.Contains(frame, position) || !strings.Contains(frame, " │  "+tc.label) {
+			t.Fatalf("rendered right pane missing token %q or cursor location %q: %q", tc.label, position, frame)
 		}
 	}
 }
@@ -308,7 +308,7 @@ func main() {
 		if !strings.Contains(line, style+name+"\x1b[0m") || strings.Count(line, "\x1b[1m") != 1 {
 			t.Fatalf("selected name styling %d: %q", i, line)
 		}
-		if i == 0 && (!strings.Contains(line, "\x1b[30;46mZ\x1b[0m();") || !strings.Contains(line, "// Z() is only a comment")) {
+		if i == 0 && (!strings.Contains(line, "\x1b[36mZ\x1b[0m();") || !strings.Contains(line, "// Z() is only a comment")) {
 			t.Fatalf("repeated call/comment styling: %q", line)
 		}
 		if i == 4 && !strings.Contains(line, "thing.\x1b[97;44m\x1b[1mRun\x1b[0m()") {
@@ -333,7 +333,7 @@ func main() {
 	for _, start := range []int{h.start - 1, h.start + 1, h.end - 1} {
 		s.horizontal = start
 		got := s.codeLine(h.row, 4, true)
-		plain := strings.NewReplacer("\x1b[97;44m", "", "\x1b[30;46m", "", "\x1b[1m", "", "\x1b[0m", "").Replace(got)
+		plain := sgrPattern.ReplaceAllString(got, "")
 		if plain != displaySlice(s.code[h.row], start, 4) || displayWidth(plain) != 4 {
 			t.Fatalf("Unicode/tab clip at %d: %q", start, got)
 		}

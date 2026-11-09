@@ -131,7 +131,7 @@ func TestFullScreenTerminal(t *testing.T) {
 					t.Fatal(err)
 				}
 				text := transcript.String()
-				ready := strings.Contains(text, terminalScreenEnter) && strings.Contains(text, "Enter:進む")
+				ready := strings.Contains(text, terminalScreenEnter) && strings.Contains(text, "\x1b[?25h")
 				if fallback {
 					ready = strings.Contains(text, "qで終了 > ")
 				}
@@ -169,7 +169,7 @@ func TestFullScreenTerminal(t *testing.T) {
 			}
 			terminalAssertRestored(t, in, original)
 			text := transcript.String()
-			plain := strings.NewReplacer("\x1b[36m", "", "\x1b[33m", "", "\x1b[1m", "", "\x1b[4m", "", "\x1b[7m", "", "\x1b[0m", "").Replace(text)
+			plain := sgrPattern.ReplaceAllString(text, "")
 			if mode == "NO_COLOR" && plain != text {
 				t.Error("NO_COLOR emitted source emphasis")
 			}
@@ -194,7 +194,7 @@ func TestFullScreenTerminal(t *testing.T) {
 				if !strings.HasPrefix(text, terminalScreenEnter) || !strings.HasSuffix(text, terminalScreenLeave) {
 					t.Errorf("alternate screen/cursor not entered and restored: %q", text)
 				}
-				if !strings.Contains(text, "\x1b[1;1Hmain.go:34-37") || !strings.Contains(plain, "35 │") {
+				if !strings.Contains(plain, "\x1b[1;1H HodoCode  main.go:34-37") || !strings.Contains(plain, "35 │") {
 					t.Error("source header or line numbers missing")
 				}
 				if strings.Contains(plain, "Tab:") || strings.Contains(plain, "│main.go:34-37") {

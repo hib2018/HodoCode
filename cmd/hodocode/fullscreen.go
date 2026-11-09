@@ -227,6 +227,12 @@ func (s *screen) codeLine(row, width int, emphasis bool) string {
 		return displaySlice(line, s.horizontal, width)
 	}
 	var spans []syntaxHighlight
+	prefix, _, _ := strings.Cut(line, " │ ")
+	gutterStyle := "\x1b[90m"
+	if row == s.cursorRow {
+		gutterStyle = "\x1b[1;36m"
+	}
+	spans = append(spans, syntaxHighlight{start: 0, end: displayWidth(prefix + " │ "), style: gutterStyle})
 	if row < len(s.syntax) {
 		spans = append(spans, s.syntax[row]...)
 	}
@@ -234,9 +240,9 @@ func (s *screen) codeLine(row, width int, emphasis bool) string {
 		if h.row != row || h.end <= h.start {
 			continue
 		}
-		style := "\x1b[30;46m"
+		style := "\x1b[36m"
 		if s.reason(s.sites[i]) != "" {
-			style = "\x1b[30;43m\x1b[4m"
+			style = "\x1b[33m\x1b[4m"
 		}
 		if i == s.callAtCursor() {
 			style = "\x1b[97;44m\x1b[1m"
@@ -266,12 +272,15 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		longest = max(longest, displayWidth(line))
 	}
 	s.horizontal = max(0, min(s.horizontal, max(0, longest-codeWidth)))
-	writeRow := func(n int, text string) {
+	writeRow := func(n int, text, style string) {
 		fmt.Fprintf(&b, "\x1b[%d;1H", n)
-		b.WriteString(displaySlice(text, 0, width))
+		b.WriteString(uiPaint(displaySlice(text, 0, width), style, emphasis))
 	}
-	writeRow(1, s.location)
-	notes := s.paneLines(noteWidth, body)
+	fmt.Fprintf(&b, "\x1b[1;1H")
+	b.WriteString(uiPaint(displaySlice(" HodoCode  "+s.location, 0, codeWidth), "1;38;5;252;48;5;237", emphasis))
+	b.WriteString(uiPaint(" │ ", "38;5;240;48;5;237", emphasis))
+	b.WriteString(uiPaint(displaySlice(" "+s.paneTitle(), 0, noteWidth), "1;38;5;110;48;5;237", emphasis))
+	notes := s.paneLines(noteWidth-2, body)
 	s.explanationTop = min(s.explanationTop, max(0, len(notes)-body))
 	for i := 0; i < body; i++ {
 		fmt.Fprintf(&b, "\x1b[%d;1H", i+2)
@@ -280,12 +289,12 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		} else {
 			b.WriteString(strings.Repeat(" ", codeWidth))
 		}
-		b.WriteString(" │ ")
+		b.WriteString(uiPaint(" │ ", "38;5;240", emphasis))
 		note := ""
 		if index := s.explanationTop + i; index < len(notes) {
 			note = notes[index]
 		}
-		b.WriteString(displaySlice(note, 0, noteWidth))
+		b.WriteString(" " + paneTextLine(note, noteWidth-2, emphasis) + " ")
 	}
 	status := "呼び出し箇所なし"
 	if len(s.sites) > 0 {
@@ -298,8 +307,14 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	if s.callAtCursor() < 0 {
 		status = "カーソル " + s.cursorStatus()
 	}
-	writeRow(height-1, status)
-	writeRow(height, "hjkl:移動 w/B:単語 0/$:行 g/G:先頭末尾 n/N:呼出 Enter:進む b:戻る i:指示 e:AI s:構文 []:解説 q:終了")
+	mode := " NORMAL  "
+	if s.agent != nil && s.agent.input != nil {
+		mode = " INPUT   "
+	}
+	progress := fmt.Sprintf(" %d%% · 解説 %d/%d ", (s.cursorRow+1)*100/max(1, len(s.code)), s.explanationTop+1, max(1, len(notes)-body+1))
+	writeRow(height-1, uiBar(mode+status, progress, width), "38;5;252;48;5;237")
+	confirming := s.agent != nil && s.agent.visible && s.agent.pending != nil && s.agent.pendingID == s.current
+	writeRow(height, screenHelp(width, confirming), "38;5;245")
 	return b.String()
 }
 

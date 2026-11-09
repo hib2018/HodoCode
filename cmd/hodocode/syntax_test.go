@@ -47,8 +47,8 @@ func TestFullScreenSyntaxAndMarkers(t *testing.T) {
 	line := s.codeLine(1, 120, true)
 	for _, want := range []string{
 		"\x1b[97;44m\x1b[1mLeaf\x1b[0m()",
-		"\x1b[30;43m\x1b[4mmissing\x1b[0m()",
-		"\x1b[30;46mLeaf\x1b[0m()",
+		"\x1b[33m\x1b[4mmissing\x1b[0m()",
+		"\x1b[36mLeaf\x1b[0m()",
 		"\x1b[90m// Leaf()\x1b[0m",
 	} {
 		if !strings.Contains(line, want) {

@@ -153,7 +153,7 @@ func (note syntaxExplanation) help() syntaxHelp {
 }
 
 func (s *screen) explanationLines(width, height int) []string {
-	lines := []string{"構文の解説", "カーソル位置（外部送信なし）"}
+	var lines []string
 	var selected *syntaxExplanation
 	best := int(^uint(0) >> 1)
 	if height > 0 && s.cursorRow >= s.top && s.cursorRow < s.top+height {
@@ -192,23 +192,28 @@ func (s *screen) explanationLines(width, height int) []string {
 			label = fmt.Sprintf("%q", label)
 		}
 		texts = []string{
-			fmt.Sprintf("%d行 %d列: %s: %s", s.p.Functions[s.current].Line+s.cursorRow, s.cursorColumn+1, label, help.description),
-			"例: " + help.example,
+			label,
+			fmt.Sprintf("%d行 %d列", s.p.Functions[s.current].Line+s.cursorRow, s.cursorColumn+1),
+			"",
+			help.description,
+			"",
+			"使用例",
+			help.example,
 		}
 	}
+	texts = append([]string{"カーソル位置（外部送信なし）", ""}, texts...)
 	width = max(1, width)
 	for _, text := range texts {
-		lines = append(lines, "")
-		line := ""
+		line, cells := "", 0
 		for _, r := range text {
-			if runeWidth(r) > width {
-				r = '?'
-			}
-			if displayWidth(line)+runeWidth(r) > width {
+			n := runeWidth(r)
+			// Retain even a wide rune when the requested width is only one cell.
+			if cells+n > width && line != "" {
 				lines = append(lines, line)
-				line = ""
+				line, cells = "", 0
 			}
 			line += string(r)
+			cells += n
 		}
 		lines = append(lines, line)
 	}

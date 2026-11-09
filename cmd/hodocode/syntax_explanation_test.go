@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go/token"
 	"strings"
 	"testing"
@@ -94,14 +95,14 @@ func TestSyntaxExplanationCursor(t *testing.T) {
 		row, column int
 		want        string
 	}{
-		{"identifier", 0, 1, "名前\":"},
-		{"define first rune", 0, 3, ":=:"},
-		{"define second rune", 0, 4, ":=:"},
+		{"identifier", 0, 1, "\"名前\""},
+		{"define first rune", 0, 3, ":="},
+		{"define second rune", 0, 4, ":="},
 		{"literal", 0, 7, "整数リテラル"},
-		{"operator", 0, 9, "+:"},
+		{"operator", 0, 9, "+"},
 		{"whitespace prefers preceding on tie", 0, 8, "整数リテラル"},
-		{"before first token", 1, 0, "return:"},
-		{"after line end", 1, 80, "名前\":"},
+		{"before first token", 1, 0, "return"},
+		{"after line end", 1, 80, "\"名前\""},
 		{"blank stays on same line", 2, 0, "解説対象の構文はありません"},
 		{"comment is not code", 3, 5, "解説対象の構文はありません"},
 		{"multiline literal", 5, 0, "文字列リテラル"},
@@ -122,7 +123,7 @@ func TestSyntaxExplanationCursor(t *testing.T) {
 	s.code = []string{"999 │ 名前 := 12 + 3"}
 	s.horizontal = 20
 	s.cursorRow, s.cursorColumn = 0, 9
-	if got := strings.Join(s.explanationLines(200, 10), ""); !strings.Contains(got, "+:") {
+	if got := strings.Join(s.explanationLines(200, 10), "\n"); !strings.Contains(got, "\n+\n") {
 		t.Fatal(got)
 	}
 	s.top = 1
@@ -143,15 +144,60 @@ func TestSyntaxExplanationIdentifiers(t *testing.T) {
 	}
 }
 
+func TestSyntaxExplanationLayout(t *testing.T) {
+	s := testScreen(t, "Recur")
+	s.explanations = sourceExplanations("func Work() {}")
+	s.cursorRow, s.cursorColumn = 0, 0
+	help := syntaxDescriptions[token.FUNC]
+	want := []string{
+		"カーソル位置（外部送信なし）", "",
+		"func", fmt.Sprintf("%d行 1列", s.p.Functions[s.current].Line), "",
+		help.description, "", "使用例", help.example,
+	}
+	if got := s.explanationLines(200, 10); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("layout = %q, want %q", got, want)
+	}
+	for _, width := range []int{0, 1, 2, 3, 11, 13, 38} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			lines := s.explanationLines(width, 10)
+			if strings.Join(lines, "") != strings.Join(want, "") {
+				t.Fatalf("wrapping lost content: %q", lines)
+			}
+			for _, line := range lines {
+				if displayWidth(line) > max(2, width) || strings.ContainsAny(line, "\x1b\t\r\n") {
+					t.Fatalf("invalid wrapped line: %q", line)
+				}
+			}
+		})
+	}
+	// Quoted source literals must stay on one logical heading, even with controls.
+	s.explanations = sourceExplanations("`あ\n\tい`")
+	if got := s.explanationLines(200, 10); got[2] != fmt.Sprintf("%q", "`あ\n\tい`") {
+		t.Fatalf("literal heading = %q", got)
+	}
+}
+
 func TestSyntaxExplanationPane(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
 	s := testScreen(t, "Recur")
 	press(t, s, "g", "0")
 	frame := s.render(120, 18, false)
-	if screenCodeWidth(120) != 77 || !strings.Contains(frame, " │ 構文の解説") || !strings.Contains(frame, "func:") {
+	if screenCodeWidth(120) != 77 || strings.Count(frame, "構文の解説") != 1 || !strings.Contains(frame, " │  func") {
 		t.Fatal(frame)
 	}
+	if strings.Contains(frame, "\x1b[0m") {
+		t.Fatal("plain parent render emitted color styles")
+	}
+	// The minimum terminal width must not clip any wrapped content in the parent.
+	for i, line := range s.explanationLines(41/3-2, 5) {
+		s.explanationTop = i
+		if frame := s.render(41, 8, false); !strings.Contains(frame, " │  "+line) {
+			t.Fatalf("narrow parent render lost line %q: %q", line, frame)
+		}
+	}
+	s.explanationTop = 0
 	lines := s.explanationLines(13, len(s.code))
-	for _, line := range lines[2:] {
+	for _, line := range lines {
 		if displayWidth(line) > 13 {
 			t.Fatalf("explanation overflows: %q", line)
 		}
@@ -161,7 +207,7 @@ func TestSyntaxExplanationPane(t *testing.T) {
 		press(t, s, "]")
 		s.render(41, 8, false)
 	}
-	notes := s.explanationLines(41/3, 5)
+	notes := s.explanationLines(41/3-2, 5)
 	if s.explanationTop != max(0, len(notes)-5) {
 		t.Fatalf("explanation scroll = %d, lines = %d", s.explanationTop, len(notes))
 	}

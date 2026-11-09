@@ -16,6 +16,7 @@ import (
 type screenPosition struct {
 	current                   string
 	selected, top, horizontal int
+	explanationTop            int
 }
 
 type callHighlight struct {
@@ -26,12 +27,13 @@ type screen struct {
 	p    *analyze.Project
 	flow *flow
 	screenPosition
-	history    []screenPosition
-	sites      []analyze.CallSite
-	highlights []callHighlight
-	code       []string
-	syntax     [][]syntaxHighlight
-	location   string
+	history      []screenPosition
+	sites        []analyze.CallSite
+	highlights   []callHighlight
+	code         []string
+	syntax       [][]syntaxHighlight
+	location     string
+	explanations []syntaxExplanation
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -71,6 +73,7 @@ func (s *screen) refresh() error {
 	s.location = fmt.Sprintf("%s:%d-%d", fn.File, fn.Line, fn.End)
 	s.code = nil
 	s.syntax = sourceHighlights(source, fn.Line)
+	s.explanations = sourceExplanations(source)
 	s.highlights = make([]callHighlight, len(s.sites))
 	offset := 0
 	for row, raw := range strings.Split(source, "\n") {
@@ -139,6 +142,10 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		}
 		s.selected = max(0, min(len(s.sites)-1, s.selected+delta))
 		s.follow(height, codeWidth)
+	case "[":
+		s.explanationTop = max(0, s.explanationTop-1)
+	case "]":
+		s.explanationTop++
 	case "pageup":
 		s.top = max(0, s.top-height)
 	case "pagedown":
@@ -215,24 +222,34 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		return b.String()
 	}
 	body := height - 3
+	codeWidth := screenCodeWidth(width)
+	noteWidth := width / 3
 	s.top = max(0, min(s.top, max(0, len(s.code)-body)))
 	longest := 0
 	for _, line := range s.code {
 		longest = max(longest, displayWidth(line))
 	}
-	s.horizontal = max(0, min(s.horizontal, max(0, longest-width)))
+	s.horizontal = max(0, min(s.horizontal, max(0, longest-codeWidth)))
 	writeRow := func(n int, text string) {
 		fmt.Fprintf(&b, "\x1b[%d;1H", n)
 		b.WriteString(displaySlice(text, 0, width))
 	}
 	writeRow(1, s.location)
+	notes := s.explanationLines(noteWidth, body)
+	s.explanationTop = min(s.explanationTop, max(0, len(notes)-body))
 	for i := 0; i < body; i++ {
 		fmt.Fprintf(&b, "\x1b[%d;1H", i+2)
 		if row := s.top + i; row < len(s.code) {
-			b.WriteString(s.codeLine(row, width, emphasis))
+			b.WriteString(s.codeLine(row, codeWidth, emphasis))
 		} else {
-			b.WriteString(strings.Repeat(" ", width))
+			b.WriteString(strings.Repeat(" ", codeWidth))
 		}
+		b.WriteString(" │ ")
+		note := ""
+		if index := s.explanationTop + i; index < len(notes) {
+			note = notes[index]
+		}
+		b.WriteString(displaySlice(note, 0, noteWidth))
 	}
 	status := "呼び出し箇所なし"
 	if len(s.sites) > 0 {
@@ -243,7 +260,7 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		}
 	}
 	writeRow(height-1, status)
-	writeRow(height, "↑↓/kj:選択 Enter:進む b:戻る ←→/hl:横 PgUp/Dn:縦 q:終了")
+	writeRow(height, "↑↓/kj:選択 Enter:進む b:戻る ←→/hl:横 PgUp/Dn:縦 []:解説 q:終了")
 	return b.String()
 }
 
@@ -377,7 +394,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if width != lastWidth || height != lastHeight {
 			if height >= 8 && width >= 41 {
-				s.follow(height-3, width)
+				s.follow(height-3, screenCodeWidth(width))
 			}
 			dirty = true
 			lastWidth, lastHeight = width, height
@@ -409,7 +426,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			}
 			continue
 		}
-		done, err := s.key(key, height-3, width)
+		done, err := s.key(key, height-3, screenCodeWidth(width))
 		if err != nil {
 			return err
 		}

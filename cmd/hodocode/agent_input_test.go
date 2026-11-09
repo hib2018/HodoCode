@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -163,7 +165,7 @@ func TestAgentInputScreenLoop(t *testing.T) {
 		if len(input) != 0 || s.agent.input != nil || s.agent.cancel != nil || s.agent.pending != nil {
 			t.Fatal("modal did not consume q as text, close, and quit without sending")
 		}
-		for _, want := range []string{"追加指示（Enter:確認 / Esc:取消）", "日本語q_"} {
+		for _, want := range []string{"追加指示", "› 日本語q▏", "Enterで送信前確認へ（まだ送信しません）"} {
 			if !strings.Contains(out.String(), want) {
 				t.Fatalf("screen loop missing %q", want)
 			}
@@ -180,17 +182,89 @@ func TestAgentInputScreenLoop(t *testing.T) {
 func TestRenderAgentInput(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "i")
+	empty := s.renderAgentInput(100, 24)
+	if !strings.Contains(empty, "› ▏指示を入力してください…") {
+		t.Fatal("missing entry placeholder")
+	}
 	typeAgentInput(t, s, "日本語q")
 	output := s.renderAgentInput(100, 24)
-	if !strings.HasPrefix(output, "\x1b[9;13H") || !strings.Contains(output, "日本語q_") || !strings.Contains(output, "Esc:取消") {
-		t.Fatalf("missing centered input: %q", output)
+	for _, want := range []string{"\x1b[7;13H╭", "追加指示", "対象: screen.First", "› 日本語q▏", "Enterで送信前確認へ（まだ送信しません）", "Enter:確認へ  Esc:取消  Ctrl+U:消去", "╰"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q: %q", want, output)
+		}
 	}
-	// Rendering at small sizes must remain safe and nonnegative.
-	for width := 0; width < 80; width++ {
-		for height := 0; height < 12; height++ {
-			if strings.Contains(s.renderAgentInput(width, height), "\x1b[-") {
-				t.Fatal("negative terminal position")
+	if strings.Contains(output, s.agent.input.id) || strings.Contains(output, "_") {
+		t.Fatal("full target ID or fake underscore caret rendered")
+	}
+	positions := regexp.MustCompile(`\x1b\[\d+;\d+H`)
+	if strings.Join(positions.FindAllString(empty, -1), "") != strings.Join(positions.FindAllString(output, -1), "") {
+		t.Fatal("short text changed modal position or height")
+	}
+	s.agent.input.status = "指示を入力してください。"
+	withError := s.renderAgentInput(100, 24)
+	if !strings.Contains(withError, "! 指示を入力してください。") || strings.Join(positions.FindAllString(withError, -1), "") != strings.Join(positions.FindAllString(output, -1), "") {
+		t.Fatal("inline error missing or shifted the modal")
+	}
+	rows := positions.Split(output, -1)[1:]
+	blank := "│ " + strings.Repeat(" ", 72) + " │"
+	if len(rows) != 11 || !strings.Contains(rows[4], "› 日本語q▏") || rows[5] != blank || rows[6] != blank {
+		t.Fatal("entry area must reserve at least three padded rows")
+	}
+}
+
+func TestRenderAgentInputLayoutBounds(t *testing.T) {
+	s := agentTestScreen(t, nil)
+	agentTestKey(t, s, "i")
+	s.agent.input.id = "example.com/" + strings.Repeat("非常に長いパッケージ/", 20) + "日本語.対象関数\x1b[2J\n\t\u202e"
+	s.agent.input.status = "エラー\x1b[2J\r\u202e" + strings.Repeat("長い説明", 40)
+	cursor := regexp.MustCompile(`\x1b\[(\d+);(\d+)H`)
+	sgr := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	for _, text := range []string{"", "日本語", strings.Repeat("日本語の長い指示", 120) + "\x1b[2J\r\t\u202e"} {
+		s.agent.input.text = text
+		for _, color := range []bool{false, true} {
+			for width := 0; width <= 100; width++ {
+				for height := 0; height <= 26; height++ {
+					output := s.renderAgentInput(width, height, color)
+					plain := sgr.ReplaceAllString(output, "")
+					matches := cursor.FindAllStringSubmatchIndex(plain, -1)
+					if output != "" && len(matches) == 0 {
+						t.Fatalf("missing cursor positions: %q", output)
+					}
+					for i, match := range matches {
+						row, _ := strconv.Atoi(plain[match[2]:match[3]])
+						col, _ := strconv.Atoi(plain[match[4]:match[5]])
+						end := len(plain)
+						if i+1 < len(matches) {
+							end = matches[i+1][0]
+						}
+						line := plain[match[1]:end]
+						cells := displayWidth(line)
+						if row < 1 || row > height || col < 1 || col+cells-1 > width || cells != min(76, width) || !utf8.ValidString(line) || strings.ContainsAny(line, "\x1b\r\n\t\u202e") {
+							t.Fatalf("layout %dx%d row=%d col=%d cells=%d: %q", width, height, row, col, cells, line)
+						}
+					}
+					if color && output != "" && strings.Count(output, ";48;5;236m") != len(matches) {
+						t.Fatal("panel background does not cover every padded row")
+					}
+					if !color && sgr.MatchString(output) {
+						t.Fatal("color-disabled render contains SGR")
+					}
+				}
 			}
+		}
+	}
+}
+
+func TestRenderAgentInputNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	s := agentTestScreen(t, nil)
+	agentTestKey(t, s, "i")
+	for _, output := range []string{s.renderAgentInput(100, 24), s.renderAgentInput(100, 24, false)} {
+		if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(output) {
+			t.Fatal("default/NO_COLOR rendering contains color escapes")
+		}
+		if !strings.Contains(output, "╭") || !strings.Contains(output, "▏") {
+			t.Fatal("color-disabled modal lost its border or caret")
 		}
 	}
 }

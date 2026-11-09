@@ -467,7 +467,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			if width >= 41 && height >= 8 {
 				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", s.cursorRow-s.top+2, s.cursorCell()-s.horizontal+1)
 			}
-			if overlay := s.renderAgentInput(width, height); overlay != "" {
+			if overlay := s.renderAgentInput(width, height, bold); overlay != "" {
 				frame += "\x1b[?25l" + overlay
 			}
 			if _, err := io.WriteString(out, frame); err != nil {

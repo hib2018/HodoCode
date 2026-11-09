@@ -103,33 +103,72 @@ func (s *screen) agentInputIdle() bool {
 }
 
 // Append after the main render so the centered box covers the underlying panes.
-func (s *screen) renderAgentInput(width, height int) string {
-	if s.agent == nil || s.agent.input == nil || width < 4 || height < 3 {
+func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
+	if s.agent == nil || s.agent.input == nil || width < 6 || height < 4 {
 		return ""
 	}
+	color := len(colors) > 0 && colors[0]
 	in := s.agent.input
 	boxWidth := min(76, width)
 	inner := boxWidth - 4
-	lines := []string{"追加指示（Enter:確認 / Esc:取消）", in.id}
-	text := wrapPaneText(in.text+"_", inner)
-	available := max(1, min(8, height-6))
+	target := in.id
+	if slash := strings.LastIndex(target, "/"); slash >= 0 {
+		target = target[slash+1:]
+	}
+	target = "対象: " + target
+	if displayWidth(target) > inner {
+		target = displaySlice(target, 0, inner-1) + "…"
+	}
+	text := wrapPaneText("› "+in.text+"▏", inner)
+	if in.text == "" {
+		text = []string{"› ▏指示を入力してください…"}
+	}
+	available := max(1, min(8, height-8))
 	if len(text) > available {
 		text = text[len(text)-available:]
 	}
+	if height >= 11 {
+		for len(text) < 3 {
+			text = append(text, "")
+		}
+	}
+	status := ""
+	if in.status != "" {
+		status = "! " + in.status
+	}
+	const safety = "Enterで送信前確認へ（まだ送信しません）"
+	const footer = "Enter:確認へ  Esc:取消  Ctrl+U:消去"
+	lines := []string{"追加指示", target, ""}
 	lines = append(lines, text...)
-	lines = append(lines, "Ctrl+U:消去 / Ctrl+C,D:終了", in.status)
-	if len(lines) > height-2 {
-		lines = lines[:height-2]
+	lines = append(lines, status, safety, footer)
+	if height < 11 {
+		// Keep the entry and controls useful when the full panel cannot fit.
+		lines = []string{"追加指示", text[len(text)-1]}
+		if status != "" {
+			lines = append(lines, status)
+		}
+		lines = append(lines, safety, footer)
+		lines = lines[:min(len(lines), height-2)]
 	}
 	x, y := (width-boxWidth)/2+1, (height-len(lines)-2)/2+1
 	var out strings.Builder
 	row := func(offset int, text string) {
-		fmt.Fprintf(&out, "\x1b[%d;%dH\x1b[0m%s", y+offset, x, text)
+		style := "38;5;252;48;5;236"
+		if offset == 0 || offset == len(lines)+1 {
+			style = "38;5;67;48;5;236"
+		}
+		if offset == 1 {
+			style = "1;38;5;110;48;5;236"
+		}
+		if offset == len(lines) {
+			style = "38;5;245;48;5;236"
+		}
+		fmt.Fprintf(&out, "\x1b[%d;%dH%s", y+offset, x, uiPaint(text, style, color))
 	}
-	row(0, "+"+strings.Repeat("-", boxWidth-2)+"+")
+	row(0, "╭"+strings.Repeat("─", boxWidth-2)+"╮")
 	for i, line := range lines {
-		row(i+1, "| "+displaySlice(line, 0, inner)+" |")
+		row(i+1, "│ "+displaySlice(line, 0, inner)+" │")
 	}
-	row(len(lines)+1, "+"+strings.Repeat("-", boxWidth-2)+"+")
+	row(len(lines)+1, "╰"+strings.Repeat("─", boxWidth-2)+"╯")
 	return out.String()
 }

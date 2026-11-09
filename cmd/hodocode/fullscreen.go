@@ -17,6 +17,7 @@ type screenPosition struct {
 	current                   string
 	selected, top, horizontal int
 	explanationTop            int
+	cursorRow, cursorColumn   int
 }
 
 type callHighlight struct {
@@ -60,6 +61,7 @@ func newScreen(p *analyze.Project, name string, expansions []string) (*screen, e
 	if err := s.refresh(); err != nil {
 		return nil, err
 	}
+	s.jumpCall()
 	return s, nil
 }
 
@@ -136,40 +138,72 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 	switch key {
 	case "q", "\x03", "\x04":
 		return true, nil
-	case "up", "k", "down", "j":
+	case "up", "k":
+		s.cursorRow--
+		s.explanationTop = 0
+		s.followCursor(height, codeWidth)
+	case "down", "j":
+		s.cursorRow++
+		s.explanationTop = 0
+		s.followCursor(height, codeWidth)
+	case "n", "N":
 		delta := 1
-		if key == "up" || key == "k" {
+		if key == "N" {
 			delta = -1
 		}
 		s.selected = max(0, min(len(s.sites)-1, s.selected+delta))
+		s.jumpCall()
+		s.explanationTop = 0
 		s.follow(height, codeWidth)
 	case "[":
 		s.explanationTop = max(0, s.explanationTop-1)
 	case "]":
 		s.explanationTop++
-	case "pageup":
-		s.top = max(0, s.top-height)
-	case "pagedown":
-		s.top = min(max(0, len(s.code)-height), s.top+height)
-	case "left", "h":
-		s.horizontal = max(0, s.horizontal-4)
-	case "right", "l":
-		longest := 0
-		for _, line := range s.code {
-			longest = max(longest, displayWidth(line))
+	case "pageup", "pagedown":
+		delta := height
+		if key == "pageup" {
+			delta = -height
 		}
-		s.horizontal = min(max(0, longest-codeWidth), s.horizontal+4)
+		s.top = max(0, min(max(0, len(s.code)-height), s.top+delta))
+		s.cursorRow = max(s.top, min(s.top+height-1, s.cursorRow+delta))
+		s.followCursor(height, codeWidth)
+		s.explanationTop = 0
+	case "left", "h", "right", "l", "0", "$", "w", "B", "g", "G":
+		switch key {
+		case "left", "h":
+			s.cursorColumn--
+		case "right", "l":
+			s.cursorColumn++
+		case "0":
+			s.cursorColumn = 0
+		case "$":
+			s.cursorColumn = len([]rune(s.rawLine(s.cursorRow))) - 1
+		case "w", "B":
+			s.moveWord(key == "B")
+		case "g":
+			s.cursorRow, s.cursorColumn = 0, 0
+		case "G":
+			s.cursorRow, s.cursorColumn = len(s.code)-1, 0
+		}
+		s.explanationTop = 0
+		s.followCursor(height, codeWidth)
 	case "b":
 		if len(s.history) > 0 {
 			s.screenPosition = s.history[len(s.history)-1]
 			s.history = s.history[:len(s.history)-1]
-			return false, s.refresh()
-		}
-	case "\r", "\n":
-		if len(s.sites) == 0 {
+			if err := s.refresh(); err != nil {
+				return false, err
+			}
+			s.followCursor(height, codeWidth)
 			return false, nil
 		}
-		site := s.sites[s.selected]
+	case "\r", "\n":
+		index := s.callAtCursor()
+		if index < 0 {
+			return false, nil
+		}
+		s.selected = index
+		site := s.sites[index]
 		if s.reason(site) != "" {
 			return false, nil
 		}
@@ -181,7 +215,8 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		if err := s.refresh(); err != nil {
 			return false, err
 		}
-		s.follow(height, codeWidth)
+		s.jumpCall()
+		s.followCursor(height, codeWidth)
 	}
 	return false, nil
 }
@@ -203,7 +238,7 @@ func (s *screen) codeLine(row, width int, emphasis bool) string {
 		if s.reason(s.sites[i]) != "" {
 			style = "\x1b[30;43m\x1b[4m"
 		}
-		if i == s.selected {
+		if i == s.callAtCursor() {
 			style = "\x1b[97;44m\x1b[1m"
 			if s.reason(s.sites[i]) != "" {
 				style += "\x1b[4m"
@@ -260,8 +295,11 @@ func (s *screen) render(width, height int, emphasis bool) string {
 			status = fmt.Sprintf("%d/%d %s (%s:%d:%d %s)", s.selected+1, len(s.sites), reason, s.p.Functions[s.current].File, site.Line, site.Column, site.Name)
 		}
 	}
+	if s.callAtCursor() < 0 {
+		status = "カーソル " + s.cursorStatus()
+	}
 	writeRow(height-1, status)
-	writeRow(height, "e:AI解説 s:構文 []:解説スクロール ↑↓:選択 Enter:進む b:戻る ←→:横 PgUp/Dn:縦 q:終了")
+	writeRow(height, "hjkl:移動 w/B:単語 0/$:行 g/G:先頭末尾 n/N:呼出 Enter:進む b:戻る i:指示 e:AI s:構文 []:解説 q:終了")
 	return b.String()
 }
 
@@ -404,13 +442,20 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if width != lastWidth || height != lastHeight {
 			if height >= 8 && width >= 41 {
-				s.follow(height-3, screenCodeWidth(width))
+				s.followCursor(height-3, screenCodeWidth(width))
 			}
 			dirty = true
 			lastWidth, lastHeight = width, height
 		}
 		if dirty {
-			if _, err := io.WriteString(out, s.render(width, height, bold)); err != nil {
+			frame := "\x1b[?25l" + s.render(width, height, bold)
+			if width >= 41 && height >= 8 {
+				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", s.cursorRow-s.top+2, s.cursorCell()-s.horizontal+1)
+			}
+			if overlay := s.renderAgentInput(width, height); overlay != "" {
+				frame += "\x1b[?25l" + overlay
+			}
+			if _, err := io.WriteString(out, frame); err != nil {
 				return err
 			}
 			dirty = false

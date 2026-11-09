@@ -69,7 +69,7 @@ func TestFullScreenNavigation(t *testing.T) {
 	if s.current != root || len(s.history) != 2 || len(s.flow.expanded) != 1 || &s.sites[0] != &cached[0] {
 		t.Fatal("recursive navigation did not reuse cached sites")
 	}
-	press(t, s, "b", "b", "j")
+	press(t, s, "b", "b", "n")
 	s.top, s.horizontal = 1, 4
 	position := s.screenPosition
 	press(t, s, "\n")
@@ -89,13 +89,132 @@ func TestFullScreenNavigation(t *testing.T) {
 	if s.screenPosition != position {
 		t.Fatal("back without history changed state")
 	}
-	press(t, s, "up", "k", "down", "j", "down")
+	press(t, s, "N", "N", "n", "n", "n")
 	if s.selected != 1 || s.current != root || len(s.history) != 0 {
 		t.Fatal("selection must clamp without following calls")
 	}
 	for _, key := range []string{"q", "\x03", "\x04"} {
 		if done, err := s.key(key, 6, 30); !done || err != nil {
 			t.Fatalf("quit %q: %v, %v", key, done, err)
+		}
+	}
+}
+
+func TestFullScreenCursorMovement(t *testing.T) {
+	p := screenProject(t, map[string]string{"main.go": "package main\nfunc Leaf() {}\nfunc main() {\n    Leaf()\n    value := 1\n    _ = value\n}\n"})
+	s, err := newScreen(p, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.cursorRow != 1 || s.cursorColumn != 4 || s.callAtCursor() != 0 {
+		t.Fatalf("initial cursor must jump to the first call: %+v", s.screenPosition)
+	}
+	for _, tc := range []struct {
+		key      string
+		row, col int
+	}{
+		{"h", 1, 3}, {"l", 1, 4}, {"right", 1, 5}, {"left", 1, 4},
+		{"j", 2, 4}, {"down", 3, 4}, {"up", 2, 4}, {"k", 1, 4},
+		{"0", 1, 0}, {"h", 1, 0}, {"$", 1, 9}, {"l", 1, 9},
+		{"g", 0, 0}, {"k", 0, 0}, {"w", 0, 5}, {"B", 0, 0},
+		{"G", 4, 0}, {"j", 4, 0}, {"g", 0, 0},
+	} {
+		press(t, s, tc.key)
+		if s.cursorRow != tc.row || s.cursorColumn != tc.col || len(s.history) != 0 || len(s.flow.expanded) != 1 {
+			t.Fatalf("key %q: cursor=(%d,%d), want (%d,%d), history=%d expanded=%d", tc.key, s.cursorRow, s.cursorColumn, tc.row, tc.col, len(s.history), len(s.flow.expanded))
+		}
+	}
+}
+
+func TestFullScreenEnterOffCall(t *testing.T) {
+	p := screenProject(t, map[string]string{"main.go": "package main\nfunc Leaf() {}\nfunc main() {\n    Leaf() // Leaf()\n}\n"})
+	s, err := newScreen(p, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		row, col int
+	}{
+		{"declaration", 0, 5}, {"whitespace", 1, 0},
+		{"opening parenthesis", 1, 8}, {"closing parenthesis", 1, 9},
+		{"comment call name", 1, 14}, {"closing brace", 2, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s.cursorRow, s.cursorColumn = tc.row, tc.col
+			s.followCursor(6, 30)
+			before := s.screenPosition
+			press(t, s, "\r", "\n")
+			if s.callAtCursor() != -1 || s.screenPosition != before || len(s.history) != 0 || len(s.flow.expanded) != 1 {
+				t.Fatalf("Enter off-call followed the stale selection: %+v", s.screenPosition)
+			}
+			if line := s.codeLine(1, 80, true); strings.Contains(line, "\x1b[97;44m") {
+				t.Fatalf("off-call cursor left a selected call highlight: %q", line)
+			}
+			if frame := s.render(160, 12, false); !strings.Contains(frame, "カーソル "+s.cursorStatus()) {
+				t.Fatalf("off-call status must show cursor position: %q", frame)
+			}
+		})
+	}
+	press(t, s, "n", "l", "\r")
+	if !strings.HasSuffix(s.current, ".Leaf") || len(s.history) != 1 {
+		t.Fatal("Enter inside, not just at the start of, a call name must follow it")
+	}
+}
+
+func TestFullScreenUnicodeTabCursor(t *testing.T) {
+	p := screenProject(t, map[string]string{"main.go": "package main\nfunc 日本語() {}\nfunc Leaf() {}\nfunc main() {\n\t日本語();\tLeaf()\n}\n"})
+	s, err := newScreen(p, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key       string
+		col, cell int
+		call      int
+	}{
+		{"h", 0, 4, -1}, {"l", 1, 8, 0}, {"l", 2, 10, 0},
+		{"right", 3, 12, 0}, {"l", 4, 14, -1},
+		{"n", 8, 24, 1}, {"N", 1, 8, 0}, {"N", 1, 8, 0},
+	} {
+		press(t, s, tc.key)
+		if s.cursorRow != 1 || s.cursorColumn != tc.col || s.cursorCell() != tc.cell || s.callAtCursor() != tc.call {
+			t.Fatalf("key %q: position=%+v cell=%d call=%d, want col=%d cell=%d call=%d", tc.key, s.screenPosition, s.cursorCell(), s.callAtCursor(), tc.col, tc.cell, tc.call)
+		}
+	}
+	press(t, s, "l")
+	s.followCursor(1, 1)
+	if s.top != 1 || s.horizontal != 10 {
+		t.Fatalf("resize must follow the cursor cell, not the whole selected call: %+v", s.screenPosition)
+	}
+	position := s.screenPosition
+	press(t, s, "\r", "b")
+	if s.screenPosition != position {
+		t.Fatalf("back must restore Unicode cursor and viewport: %+v, want %+v", s.screenPosition, position)
+	}
+}
+
+func TestFullScreenCursorRightPaneCoupling(t *testing.T) {
+	p := screenProject(t, map[string]string{"main.go": "package main\nfunc Leaf() {}\nfunc main() {\n    Leaf()\n    value := 1\n    _ = value\n}\n"})
+	s, err := newScreen(p, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ key, label string }{
+		{"n", `"Leaf"`}, {"j", `"value"`}, {"w", ":="}, {"B", `"value"`},
+	} {
+		s.explanationTop = 3
+		press(t, s, tc.key)
+		notes := strings.Join(s.paneLines(200, 6), "\n")
+		position := fmt.Sprintf("%d行 %d列: %s:", s.p.Functions[s.current].Line+s.cursorRow, s.cursorColumn+1, tc.label)
+		if s.explanationTop != 0 || !strings.Contains(notes, position) {
+			t.Fatalf("key %q: pane must follow cursor and reset scroll: %q", tc.key, notes)
+		}
+		if s.selected != 0 || len(s.history) != 0 {
+			t.Fatal("syntax navigation must not follow or discard the selected call")
+		}
+		if frame := s.render(240, 12, false); !strings.Contains(frame, position) {
+			t.Fatalf("rendered right pane missing cursor explanation %q: %q", position, frame)
 		}
 	}
 }
@@ -139,6 +258,7 @@ func TestFullScreenDefaultMainAndErrors(t *testing.T) {
 	}
 	// Force expansion and refresh failures without modifying production source.
 	s.selected = 1
+	s.jumpCall()
 	s.flow.nodes[s.sites[1].To] = false
 	if _, err := s.key("\r", 6, 30); err == nil || len(s.history) != 0 {
 		t.Fatal("expansion failure was swallowed or pushed history")
@@ -204,10 +324,11 @@ func main() {
 		if !strings.Contains(frame, position) || !strings.Contains(frame, fmt.Sprintf("%d/%d", i+1, len(want))) {
 			t.Errorf("plain status missing selected position %s for %s", position, name)
 		}
-		press(t, s, "j")
+		press(t, s, "n")
 	}
 	// Clipping inside a wide name must not split a UTF-8 rune or overflow cells.
 	s.selected = 6
+	s.jumpCall()
 	h := s.highlights[6]
 	for _, start := range []int{h.start - 1, h.start + 1, h.end - 1} {
 		s.horizontal = start
@@ -223,6 +344,7 @@ func main() {
 	}
 	press(t, s, "b")
 	s.selected = 4
+	s.jumpCall()
 	press(t, s, "\r")
 	if s.current != "example.com/screen.Thing.Run" {
 		t.Fatal("method navigation failed")
@@ -263,12 +385,12 @@ func TestFullScreenScrollAndResize(t *testing.T) {
 	for _, key := range []string{"right", "l", "left", "h"} {
 		previous := s.screenPosition
 		press(t, s, key)
-		want := previous.horizontal + 4
+		want := previous.cursorColumn + 1
 		if key == "left" || key == "h" {
-			want = max(0, previous.horizontal-4)
+			want = previous.cursorColumn - 1
 		}
-		if s.horizontal != want || s.top != previous.top || s.selected != previous.selected || s.current != root || len(s.history) != 0 {
-			t.Fatalf("horizontal-only key %q: %+v", key, s.screenPosition)
+		if s.cursorColumn != want || s.horizontal != previous.horizontal || s.cursorRow != previous.cursorRow || s.top != previous.top || s.current != root || len(s.history) != 0 {
+			t.Fatalf("character movement %q: %+v", key, s.screenPosition)
 		}
 	}
 	press(t, s, "pagedown")
@@ -286,19 +408,21 @@ func TestFullScreenScrollAndResize(t *testing.T) {
 		t.Fatal("page-down did not clamp")
 	}
 	s.selected = len(s.sites) - 1
+	s.jumpCall()
 	s.follow(3, 12)
 	h := s.highlights[s.selected]
 	if h.row < s.top || h.row >= s.top+3 || h.start < s.horizontal || h.end > s.horizontal+12 {
 		t.Fatalf("selection not visible: %+v highlight=%+v", s.screenPosition, h)
 	}
 	s.selected = 0
+	s.jumpCall()
 	s.follow(3, 2)
 	h = s.highlights[0]
 	if s.horizontal != h.start || h.row < s.top || h.row >= s.top+3 {
 		t.Fatal("long name should follow from its beginning")
 	}
 	for _, size := range [][2]int{{41, 8}, {42, 8}, {80, 15}, {101, 12}} {
-		s.follow(size[1]-3, size[0])
+		s.followCursor(size[1]-3, screenCodeWidth(size[0]))
 		position := s.screenPosition
 		frame := s.render(size[0], size[1], false)
 		rows := 0
@@ -419,7 +543,7 @@ func TestFullScreenKeyDecoder(t *testing.T) {
 func TestFullScreenLoop(t *testing.T) {
 	s := testScreen(t, "Recur")
 	var out bytes.Buffer
-	input := []byte{'j', '\r', '\t', 'j', '\t', 'b', 'q'}
+	input := []byte{'n', '\r', '\t', 'j', '\t', 'b', 'q'}
 	calls := 0
 	read := func() (byte, bool, error) { b := input[0]; input = input[1:]; calls++; return b, true, nil }
 	size := func() (int, int, error) {

@@ -57,6 +57,7 @@ func TestFullScreenSyntaxAndMarkers(t *testing.T) {
 	}
 	for selected, site := range s.sites {
 		s.selected = selected
+		s.jumpCall()
 		line := s.codeLine(1, 120, true)
 		style := "\x1b[97;44m\x1b[1m"
 		if site.Unknown {

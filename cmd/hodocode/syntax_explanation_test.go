@@ -20,10 +20,10 @@ func TestSourceExplanations(t *testing.T) {
 		}
 	}
 	want := []syntaxExplanation{
-		{0, 0, 0, 4, token.FUNC, "func"},
-		{2, 3, 2, 5, token.DEFINE, ":="},
-		{3, 1, 3, 3, token.IF, "if"},
-		{3, 20, 3, 26, token.RETURN, "return"},
+		{0, 0, 0, 4, token.FUNC, "func", "func_decl"},
+		{2, 3, 2, 5, token.DEFINE, ":=", ""},
+		{3, 1, 3, 3, token.IF, "if", ""},
+		{3, 20, 3, 26, token.RETURN, "return", ""},
 	}
 	if len(keywords) != len(want) {
 		t.Fatalf("keywords = %+v", keywords)
@@ -39,11 +39,11 @@ func TestSourceExplanationsRunePositions(t *testing.T) {
 	source := "//line other.go:500\n\t名前 := `あ\r\nい` + '界'\n// if := return\n"
 	notes := sourceExplanations(source)
 	want := []syntaxExplanation{
-		{1, 1, 1, 3, token.IDENT, "名前"},
-		{1, 4, 1, 6, token.DEFINE, ":="},
-		{1, 7, 2, 2, token.STRING, "`あ\nい`"},
-		{2, 3, 2, 4, token.ADD, "+"},
-		{2, 5, 2, 8, token.CHAR, "'界'"},
+		{1, 1, 1, 3, token.IDENT, "名前", ""},
+		{1, 4, 1, 6, token.DEFINE, ":=", ""},
+		{1, 7, 2, 2, token.STRING, "`あ\nい`", ""},
+		{2, 3, 2, 4, token.ADD, "+", ""},
+		{2, 5, 2, 8, token.CHAR, "'界'", ""},
 	}
 	if len(notes) != len(want) {
 		t.Fatalf("notes = %+v", notes)
@@ -148,19 +148,19 @@ func TestSyntaxExplanationLayout(t *testing.T) {
 	s := testScreen(t, "Recur")
 	s.explanations = sourceExplanations("func Work() {}")
 	s.cursorRow, s.cursorColumn = 0, 0
-	help := syntaxDescriptions[token.FUNC]
+	help := syntaxTopics["func_decl"]
 	want := []string{
 		"カーソル位置（外部送信なし）", "",
-		"func", fmt.Sprintf("%d行 1列", s.p.Functions[s.current].Line), "",
-		help.description, "", "使用例", help.example,
+		"func", help.category + " · " + help.title, fmt.Sprintf("%d行 1列", s.p.Functions[s.current].Line), "",
+		"意味", help.description, "", "書き方", help.syntax, "", "使用例", help.example, "", "注意点", help.caution, "", "公式リファレンス", help.reference,
 	}
-	if got := s.explanationLines(200, 10); strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if got := s.explanationLines(500, 10); strings.Join(got, "\n") != strings.ReplaceAll(strings.Join(want, "\n"), "\t", "    ") {
 		t.Fatalf("layout = %q, want %q", got, want)
 	}
 	for _, width := range []int{0, 1, 2, 3, 11, 13, 38} {
 		t.Run(fmt.Sprint(width), func(t *testing.T) {
 			lines := s.explanationLines(width, 10)
-			if strings.Join(lines, "") != strings.Join(want, "") {
+			if strings.Join(lines, "") != strings.NewReplacer("\n", "", "\t", "    ").Replace(strings.Join(want, "")) {
 				t.Fatalf("wrapping lost content: %q", lines)
 			}
 			for _, line := range lines {
@@ -203,7 +203,7 @@ func TestSyntaxExplanationPane(t *testing.T) {
 		}
 	}
 	// A short terminal still lets the user read all of the wrapped explanation.
-	for range 30 {
+	for range 500 {
 		press(t, s, "]")
 		s.render(41, 8, false)
 	}

@@ -207,7 +207,7 @@ func TestFullScreenCursorRightPaneCoupling(t *testing.T) {
 		press(t, s, tc.key)
 		notes := strings.Join(s.paneLines(200, 6), "\n")
 		position := fmt.Sprintf("%d行 %d列", s.p.Functions[s.current].Line+s.cursorRow, s.cursorColumn+1)
-		if s.explanationTop != 0 || !strings.Contains(notes, "\n"+tc.label+"\n"+position+"\n") {
+		if s.explanationTop != 0 || !strings.Contains(notes, "\n"+tc.label+"\n") || !strings.Contains(notes, "\n"+position+"\n") || !strings.Contains(notes, "\n意味\n") || !strings.Contains(notes, "\n注意点\n") {
 			t.Fatalf("key %q: pane must follow cursor and reset scroll: %q", tc.key, notes)
 		}
 		if s.selected != 0 || len(s.history) != 0 {

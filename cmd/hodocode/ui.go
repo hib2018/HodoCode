@@ -47,8 +47,16 @@ func uiBar(left, right string, width int) string {
 
 func paneTextLine(text string, width int, color bool) string {
 	style := "38;5;252"
-	if text == "使用例" || strings.HasPrefix(text, "例:") {
+	switch text {
+	case "意味", "書き方", "使用例":
 		style = "1;38;5;110"
+	case "注意点":
+		style = "1;38;5;179"
+	case "公式リファレンス":
+		style = "38;5;245"
+	}
+	if strings.HasPrefix(text, "https://go.dev/") {
+		style = "38;5;245"
 	}
 	if text == "構文の解説" || strings.HasPrefix(text, "カーソル位置") {
 		style = "38;5;245"

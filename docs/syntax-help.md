@@ -33,16 +33,18 @@
 
 - カーソル位置は元ソースの物理行・rune列を使います。`//line` による仮想位置には置き換えません。
 - トークン走査に加えて現在の関数断片のASTを解析し、型の `*T`、参照解除の `*p`、乗算の `a*b` などを区別します。
-- 関数断片内で確認できる同名宣言は組み込み名の説明と区別します。ただしパッケージ全体の名前・型・実行時の値は解決しません。`len` や `int` などは事前宣言名の候補として説明し、同名宣言があり得ることを注意書きに示します。
+- `println`・`len` などの組み込み関数や `string`・`error` などの事前宣言型は、通常の呼び出し位置以外でも名前から役割を説明します。関数断片内の同名宣言、フィールド名、セレクタは一般の識別子と区別します。断片外の宣言は構文だけでは確定できないため、候補であることと同名宣言の可能性を注意書きに示します。
+- 標準ライブラリの38関数には専用の説明があります。対象は `fmt`・`errors`・`strings`・`strconv`・`os`・`io`・`context`・`time`・`log` のよく使う関数です。既存の呼び出し解析が返すパッケージパスと関数名で照合するため、importの別名にも対応し、単に `fmt.Println` と書かれているだけの独自メソッドには適用しません。解析で分かる呼び出しが独自関数・関数値なら、同名の組み込み解説も抑制します。
+- 標準関数の参考資料は [Go標準ライブラリ公式リファレンス](https://pkg.go.dev/std) とインストール済みGoの `go doc` です。例：組み込み `println` はデバッグ用の実装依存の出力、[fmt.Println](https://pkg.go.dev/fmt#Println) は標準出力へ書き込み、バイト数とエラーを返す関数として区別します。リンクは表示するだけで、自動接続しません。
 - 式の `f[T]` は添字か型引数かを構文だけでは判定できません。型の位置など確定できる場合を除き、両方の可能性を説明します。
 - 不完全・構文エラーのある断片はAST判定を行わず、トークン単位の説明に戻ります。コメントの中身はコードとして解説しません。
 
 ## 更新・検証
 
-解説データは `cmd/hodocode/syntax_help.go`、用途判定は `syntax_context.go`、表示は `syntax_explanation.go` に分離しています。項目を追加するときは7つのデータ欄と、その規則を説明する公式仕様の節を揃えます。断定できない意味は推測せず、注意点で限界を説明します。
+解説データは `cmd/hodocode/syntax_help.go`、標準関数の解説は `standard_help.go`、用途判定は `syntax_context.go`、表示は `syntax_explanation.go` に分離しています。項目を追加するときは7つのデータ欄と、その規則を説明する公式仕様の節または標準ライブラリのシンボルへの参照を揃えます。断定できない意味は推測せず、注意点で限界を説明します。
 
 ```sh
-go test ./cmd/hodocode -run 'Test(SourceTopics|SourceExplanations|SyntaxExplanation|SyntaxHelp)'
+go test ./cmd/hodocode -run 'Test(Known|StandardHelp|SourceTopics|SourceExplanations|SyntaxExplanation|SyntaxHelp)'
 go test -race ./cmd/hodocode
 ```
 

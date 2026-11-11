@@ -296,17 +296,11 @@ func TestLimitsAndErrors(t *testing.T) {
 	if _, err := (&Request{}).Explain(context.Background(), run); err == nil {
 		t.Fatal("zero request")
 	}
-	// Large retained source errors before sending step two, never truncates it.
+	// Large retained source is rejected locally, before either transmission.
 	write(t, p.Root, "main.go", "package demo\nfunc Huge() {\n"+strings.Repeat(" println(1)\n", 14000)+"}\n")
 	p.Functions = map[string]analyze.Function{"p.Huge": {ID: "p.Huge", File: "main.go", Line: 2, End: 14003}}
-	r, err := Prepare(p, "p.Huge", "purpose", nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls = 0
-	_, err = r.Explain(context.Background(), func(context.Context, string) (string, error) { calls++; return `["p.Huge"]`, nil })
-	if err == nil || calls != 1 || !strings.Contains(err.Error(), "prompt exceeds") {
-		t.Fatalf("limit: %v calls=%d", err, calls)
+	if _, err := Prepare(p, "p.Huge", "purpose", nil, nil); err == nil || !strings.Contains(err.Error(), "prompt exceeds") {
+		t.Fatalf("limit: %v", err)
 	}
 	// Oversized candidate metadata is rejected before any invocation.
 	id := strings.Repeat("x", maxPrompt)

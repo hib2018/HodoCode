@@ -76,7 +76,14 @@ func (s *screen) refresh() error {
 	s.location = fmt.Sprintf("%s:%d-%d", fn.File, fn.Line, fn.End)
 	s.code = nil
 	s.syntax = sourceHighlights(source, fn.Line)
-	s.explanations = sourceExplanations(source)
+	symbols := map[int]string{}
+	for _, site := range s.sites {
+		symbols[site.Offset] = "identifier"
+		if _, local := s.p.Functions[site.To]; !local && !site.Unknown && standardHelp[site.To].title != "" {
+			symbols[site.Offset] = "standard:" + site.To
+		}
+	}
+	s.explanations = sourceExplanations(source, symbols)
 	s.highlights = make([]callHighlight, len(s.sites))
 	offset := 0
 	for row, raw := range strings.Split(source, "\n") {

@@ -947,6 +947,9 @@ func (note syntaxExplanation) help() syntaxHelp {
 	if note.topic == "identifier" {
 		return syntaxDescriptions[token.IDENT]
 	}
+	if help, ok := standardHelp[strings.TrimPrefix(note.topic, "standard:")]; strings.HasPrefix(note.topic, "standard:") && ok {
+		return help
+	}
 	if help, ok := syntaxTopics[note.topic]; note.topic != "" && ok {
 		return help
 	}
@@ -975,6 +978,11 @@ func (note syntaxExplanation) help() syntaxHelp {
 		switch note.literal {
 		case "true", "false", "nil", "_", "iota":
 			return syntaxTopics[note.literal]
+		}
+		for _, prefix := range []string{"builtin_", "type_"} {
+			if help, ok := syntaxTopics[prefix+note.literal]; ok {
+				return help
+			}
 		}
 	}
 	return syntaxDescriptions[note.token]

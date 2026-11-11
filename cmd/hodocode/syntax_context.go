@@ -89,8 +89,17 @@ func sourceTopics(source string) map[int]string {
 			if n.Obj != nil {
 				mark(n.Pos(), "identifier")
 			}
+		case *ast.SelectorExpr:
+			mark(n.Sel.Pos(), "identifier")
 		case *ast.Field:
+			for _, name := range n.Names {
+				mark(name.Pos(), "identifier")
+			}
 			markType(n.Type)
+		case *ast.KeyValueExpr:
+			if name, ok := n.Key.(*ast.Ident); ok && (syntaxTopics["builtin_"+name.Name].title != "" || syntaxTopics["type_"+name.Name].title != "") {
+				mark(name.Pos(), "identifier")
+			}
 		case *ast.ValueSpec:
 			markType(n.Type)
 		case *ast.TypeSpec:

@@ -15,7 +15,7 @@ type syntaxExplanation struct {
 	topic                          string
 }
 
-func sourceExplanations(source string) []syntaxExplanation {
+func sourceExplanations(source string, symbols ...map[int]string) []syntaxExplanation {
 	file := token.NewFileSet().AddFile("", -1, len(source))
 	var scan scanner.Scanner
 	scan.Init(file, []byte(source), func(token.Position, string) {}, 0)
@@ -32,6 +32,7 @@ func sourceExplanations(source string) []syntaxExplanation {
 	}
 	var notes []syntaxExplanation
 	topics := sourceTopics(source)
+	previous := token.ILLEGAL
 	for {
 		pos, tok, literal := scan.Scan()
 		if tok == token.EOF {
@@ -53,9 +54,19 @@ func sourceExplanations(source string) []syntaxExplanation {
 				end = len(source)
 			}
 		}
+		topic := topics[offset]
+		if tok == token.IDENT {
+			if previous == token.PERIOD {
+				topic = "identifier"
+			}
+			if len(symbols) > 0 && symbols[0][offset] != "" {
+				topic = symbols[0][offset]
+			}
+		}
+		previous = tok
 		row, column := position(offset)
 		endRow, endColumn := position(min(end, len(source)))
-		notes = append(notes, syntaxExplanation{row, column, endRow, endColumn, tok, literal, topics[offset]})
+		notes = append(notes, syntaxExplanation{row, column, endRow, endColumn, tok, literal, topic})
 	}
 }
 

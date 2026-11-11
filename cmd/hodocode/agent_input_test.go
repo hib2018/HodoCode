@@ -47,23 +47,33 @@ func TestAgentInputHistoryAndExplicitSend(t *testing.T) {
 			t.Fatal(result.err)
 		}
 	}
-	want := "Explain the flow\n\n日本語で説明してq\n\n呼び出し元も説明して"
-	if s.agent.purpose(id) != want || len(prompts) != 4 {
-		t.Fatalf("purpose=%q prompts=%d", s.agent.purpose(id), len(prompts))
+	if len(s.agent.history[id]) != 4 || len(prompts) != 4 {
+		t.Fatalf("history=%+v prompts=%d", s.agent.history[id], len(prompts))
 	}
 	for i, prompt := range prompts {
-		if !strings.Contains(prompt, "日本語で説明してq") || (i >= 2 && !strings.Contains(prompt, "呼び出し元も説明して")) || strings.Contains(prompt, "PREVIOUS_MODEL_ANSWER") {
+		if !strings.Contains(prompt, `"purpose":"Explain the flow"`) || !strings.Contains(prompt, "日本語で説明してq") || (i >= 2 && (!strings.Contains(prompt, "呼び出し元も説明して") || !strings.Contains(prompt, "PREVIOUS_MODEL_ANSWER"))) {
 			t.Fatalf("unexpected prompt %d: %s", i, prompt)
 		}
+		if i%2 == 1 && (!strings.Contains(prompt, "現在の question にだけ") || !strings.Contains(prompt, "明示的に求められない限り")) {
+			t.Fatal("follow-up requested full regeneration")
+		}
+	}
+	pane := strings.Join(s.paneLines(100, 10), "\n")
+	if strings.Count(pane, "PREVIOUS_MODEL_ANSWER") != 2 || !strings.Contains(pane, "利用者") || !strings.Contains(pane, "エージェント") {
+		t.Fatal("conversation did not append both replies with speakers")
 	}
 	press(t, s, "\r")
-	if s.agent.purpose(s.current) != "Explain the flow" {
-		t.Fatal("instructions leaked to another function")
+	if len(s.agent.history[s.current]) != 0 {
+		t.Fatal("history leaked to another function")
 	}
 	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "別の関数\r")
-	if !strings.Contains(s.agent.purpose(s.current), "別の関数") || s.agent.purpose(id) != want {
+	if s.agent.questions[s.current] != "別の関数" || len(s.agent.history[id]) != 4 {
 		t.Fatal("per-function history was not retained")
+	}
+	press(t, s, "b")
+	if strings.Count(strings.Join(s.paneLines(100, 10), "\n"), "PREVIOUS_MODEL_ANSWER") != 2 {
+		t.Fatal("returning to function lost conversation")
 	}
 }
 
@@ -84,11 +94,11 @@ func TestAgentInputEditingAndCancel(t *testing.T) {
 		t.Fatal("ASCII backspace failed")
 	}
 	typeAgentInput(t, s, "\x15\r")
-	if s.agent.input.text != "" || s.agent.input.status == "" || len(s.agent.instructions) != 0 {
+	if s.agent.input.text != "" || s.agent.input.status == "" || len(s.agent.history) != 0 {
 		t.Fatal("clear/empty commit mutated history or closed input")
 	}
 	typeAgentInput(t, s, "取消\x1b")
-	if !s.agentInputIdle() || s.agent.input != nil || s.agent.pending != pending || len(s.agent.instructions) != 0 {
+	if !s.agentInputIdle() || s.agent.input != nil || s.agent.pending != pending || len(s.agent.history) != 0 {
 		t.Fatal("Escape did not cancel without mutation")
 	}
 	for _, b := range []byte{3, 4} {
@@ -107,24 +117,21 @@ func TestAgentInputEditingAndCancel(t *testing.T) {
 func TestAgentInputSizeBounds(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	id := s.current
-	agentTestKey(t, s, "e")
-	pending := s.agent.pending
 	agentTestKey(t, s, "i")
-	room := maxAgentPurpose - len(s.agent.options.purpose) - 2
-	typeAgentInput(t, s, strings.Repeat("x", room+1)+"\r")
-	if s.agent.input == nil || s.agent.input.status == "" || len(s.agent.instructions) != 0 || s.agent.pending != pending {
-		t.Fatal("oversize purpose mutated history or preview")
+	typeAgentInput(t, s, strings.Repeat("x", maxAgentPurpose+1))
+	if len(s.agent.input.text) != maxAgentPurpose || s.agent.input.status == "" || len(s.agent.history) != 0 {
+		t.Fatal("draft size bound failed")
 	}
-	typeAgentInput(t, s, "\x7f\r")
-	if s.agent.input != nil || len(s.agent.purpose(id)) != maxAgentPurpose || s.agent.pending == nil {
-		t.Fatal("exactly 8KiB purpose was not accepted")
+	typeAgentInput(t, s, "\r")
+	if s.agent.input != nil || len(s.agent.questions[id]) != maxAgentPurpose || s.agent.pending == nil {
+		t.Fatal("exactly 8KiB question was not accepted independently of purpose")
 	}
-	pending = s.agent.pending
 	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "日\r")
-	if s.agent.input == nil || len(s.agent.instructions[id]) != 1 || s.agent.pending != pending {
-		t.Fatal("cumulative size validation mutated existing state")
+	if s.agent.input != nil || s.agent.questions[id] != "日" || len(s.agent.history) != 0 {
+		t.Fatal("new question was accumulated instead of replacing the unsent draft")
 	}
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "\x15"+strings.Repeat("日", maxAgentPurpose/3+1))
 	if len(s.agent.input.text) > maxAgentPurpose || !utf8.ValidString(s.agent.input.text) || s.agent.input.status == "" {
 		t.Fatal("draft byte limit corrupted UTF-8 or was exceeded")
@@ -173,7 +180,7 @@ func TestAgentInputScreenLoop(t *testing.T) {
 		if !cancel && !strings.Contains(out.String(), "まだ送信していません") {
 			t.Fatal("Enter skipped preview")
 		}
-		if cancel && len(s.agent.instructions) != 0 {
+		if cancel && len(s.agent.history) != 0 {
 			t.Fatal("cancel retained draft")
 		}
 	}

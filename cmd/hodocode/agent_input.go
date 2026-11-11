@@ -14,12 +14,6 @@ type agentInput struct {
 	id, text, partial, escape, status string
 }
 
-func (a *agentPane) purpose(id string) string {
-	parts := []string{a.options.purpose}
-	parts = append(parts, a.instructions[id]...)
-	return strings.Join(parts, "\n\n")
-}
-
 // agentInputByte must run before the navigation decoder, including on small terminals.
 func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 	if s.agent == nil || s.agent.input == nil {
@@ -51,14 +45,7 @@ func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 			in.status = "指示を入力してください。"
 			return true
 		}
-		if len(a.purpose(in.id))+2+len(instruction) > maxAgentPurpose {
-			in.status = "目的と追加指示の合計は8KiB以内にしてください。"
-			return true
-		}
-		if a.instructions == nil {
-			a.instructions = make(map[string][]string)
-		}
-		a.instructions[in.id] = append(a.instructions[in.id], instruction)
+		a.questions[in.id] = instruction
 		a.input = nil
 		s.agentKey(ctx, "e")
 	case 0x7f, 0x08:

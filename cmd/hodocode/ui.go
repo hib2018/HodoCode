@@ -21,12 +21,12 @@ func (s *screen) paneTitle() string {
 
 func screenHelp(width int) string {
 	if width < 80 {
-		return " hjkl 移動 · i 指示 · e AI送信 · q 終了"
+		return " hjkl 移動 · t 階層 · e AI送信 · q 終了"
 	}
 	if width < 140 {
-		return " hjkl 移動 · Enter 進む · b 戻る · i 指示 · e AI送信 · s 構文 · [] 解説 · q 終了"
+		return " hjkl 移動 · Enter 進む · b 戻る · i 指示 · e AI送信 · s 構文 · t 階層 · q 終了"
 	}
-	return " hjkl 移動   w/B 単語   0/$ 行頭末   g/G 先頭末尾   n/N 呼出   Enter 進む   b 戻る   i 追加指示   e AI送信   s 構文   [] 解説   q 終了"
+	return " hjkl 移動  w/B 単語  0/$ 行頭末  g/G 先頭末尾  n/N 呼出  Enter 進む  b 戻る  t 階層  i 追加指示  e AI送信  s 構文  [] 解説  q 終了"
 }
 
 func uiBar(left, right string, width int) string {

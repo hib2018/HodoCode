@@ -36,6 +36,7 @@ type screen struct {
 	location     string
 	explanations []syntaxExplanation
 	agent        *agentPane
+	tree         *callTree
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -153,7 +154,12 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 			}
 		}()
 	}
+	if s.tree != nil && s.tree.visible {
+		return s.treeKey(key, height, codeWidth)
+	}
 	switch key {
+	case "t":
+		return false, s.openTree()
 	case "q", "\x03", "\x04":
 		return true, nil
 	case "up", "k":
@@ -274,6 +280,10 @@ func (s *screen) codeLine(row, width int, emphasis bool) string {
 }
 
 func (s *screen) render(width, height int, emphasis bool) string {
+	if s.tree != nil && s.tree.visible {
+		position := s.screenPosition
+		defer func() { s.screenPosition = position }()
+	}
 	var b strings.Builder
 	b.WriteString("\x1b[H")
 	if width < 41 || height < 8 {
@@ -332,7 +342,7 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	progress := fmt.Sprintf(" %d%% · 解説 %d/%d ", (s.cursorRow+1)*100/max(1, len(s.code)), s.explanationTop+1, max(1, len(notes)-body+1))
 	writeRow(height-1, uiBar(mode+status, progress, width), "38;5;252;48;5;237")
 	writeRow(height, screenHelp(width), "38;5;245")
-	return b.String()
+	return b.String() + s.renderTree(width, height, emphasis)
 }
 
 // shortcut: cell widths cover CJK and combining marks, not every emoji grapheme;
@@ -473,7 +483,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			return err
 		}
 		if width != lastWidth || height != lastHeight {
-			if height >= 8 && width >= 41 {
+			if height >= 8 && width >= 41 && (s.tree == nil || !s.tree.visible) {
 				s.followCursor(height-3, screenCodeWidth(width))
 			}
 			dirty = true
@@ -481,7 +491,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if dirty {
 			frame := "\x1b[?25l" + s.render(width, height, bold)
-			if width >= 41 && height >= 8 {
+			if width >= 41 && height >= 8 && (s.tree == nil || !s.tree.visible) {
 				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", s.cursorRow-s.top+2, s.cursorCell()-s.horizontal+1)
 			}
 			if overlay := s.renderAgentInput(width, height, bold); overlay != "" {
@@ -500,6 +510,10 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			return err
 		}
 		if !ok {
+			if decoder.escape == "\x1b" && s.tree != nil && s.tree.visible {
+				s.tree.visible = false
+				dirty = true
+			}
 			decoder.escape = ""
 			if s.agentInputIdle() {
 				dirty = true
@@ -520,7 +534,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			}
 			continue
 		}
-		if s.agentKey(ctx, key) {
+		if (s.tree == nil || !s.tree.visible) && s.agentKey(ctx, key) {
 			dirty = true
 			continue
 		}

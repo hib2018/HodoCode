@@ -171,16 +171,19 @@ func TestAgentInputScreenLoop(t *testing.T) {
 		if err := screenLoop(context.Background(), s, &out, read, func() (int, int, error) { return 120, 24, nil }, false); err != nil {
 			t.Fatal(err)
 		}
-		if len(input) != 0 || s.agent.input != nil || s.agent.cancel != nil || s.agent.pending != nil {
+		if len(input) != 0 || s.agent.input != nil || s.agent.cancel != nil || calls.Load() != 0 {
 			t.Fatal("modal did not consume q as text, close, and quit without sending")
 		}
-		for _, want := range []string{"追加指示", "› 日本語q▏", "Enterで送信前確認へ（まだ送信しません）"} {
+		for _, want := range []string{"追加指示", "› 日本語q", "Enterでfxへ送信します"} {
 			if !strings.Contains(out.String(), want) {
 				t.Fatalf("screen loop missing %q", want)
 			}
 		}
-		if !cancel && !strings.Contains(out.String(), "まだ送信していません") {
-			t.Fatal("Enter skipped preview")
+		if !cancel && (s.agent.questions[s.current] != "日本語q" || !strings.Contains(out.String(), "target is excluded or blocked")) {
+			t.Fatal("Enter did not prepare the request with the entered question")
+		}
+		if strings.Contains(out.String(), "▏") {
+			t.Fatal("input rendered a fake cursor")
 		}
 		if cancel && len(s.agent.history) != 0 {
 			t.Fatal("cancel retained draft")
@@ -192,31 +195,36 @@ func TestRenderAgentInput(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "i")
 	empty := s.renderAgentInput(100, 24)
-	if !strings.Contains(empty, "› ▏指示を入力してください…") {
+	if !strings.Contains(empty, "› 指示を入力してください…") {
 		t.Fatal("missing entry placeholder")
 	}
 	typeAgentInput(t, s, "日本語q")
 	output := s.renderAgentInput(100, 24)
-	for _, want := range []string{"\x1b[7;13H╭", "追加指示", "対象: screen.First", "› 日本語q▏", "Enterで送信前確認へ（まだ送信しません）", "Enter:確認へ  Esc:取消  Ctrl+U:消去", "╰"} {
+	for _, want := range []string{"\x1b[7;13H╭", "追加指示", "対象: screen.First", "› 日本語q", "Enterでfxへ送信します", "Enter:送信  Esc:取消  Ctrl+U:消去", "╰"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("missing %q: %q", want, output)
 		}
 	}
-	if strings.Contains(output, s.agent.input.id) || strings.Contains(output, "_") {
-		t.Fatal("full target ID or fake underscore caret rendered")
+	if strings.Contains(output, s.agent.input.id) || strings.Contains(output, "_") || strings.Contains(output, "▏") {
+		t.Fatal("full target ID or fake caret rendered")
 	}
 	positions := regexp.MustCompile(`\x1b\[\d+;\d+H`)
-	if strings.Join(positions.FindAllString(empty, -1), "") != strings.Join(positions.FindAllString(output, -1), "") {
+	boxPositions := func(text string) string {
+		matches := positions.FindAllString(text, -1)
+		return strings.Join(matches[:len(matches)-1], "")
+	}
+	if boxPositions(empty) != boxPositions(output) {
 		t.Fatal("short text changed modal position or height")
 	}
 	s.agent.input.status = "指示を入力してください。"
 	withError := s.renderAgentInput(100, 24)
-	if !strings.Contains(withError, "! 指示を入力してください。") || strings.Join(positions.FindAllString(withError, -1), "") != strings.Join(positions.FindAllString(output, -1), "") {
+	if !strings.Contains(withError, "! 指示を入力してください。") || boxPositions(withError) != boxPositions(output) {
 		t.Fatal("inline error missing or shifted the modal")
 	}
 	rows := positions.Split(output, -1)[1:]
+	rows = rows[:len(rows)-1] // Final movement positions the real cursor, not a box row.
 	blank := "│ " + strings.Repeat(" ", 72) + " │"
-	if len(rows) != 11 || !strings.Contains(rows[4], "› 日本語q▏") || rows[5] != blank || rows[6] != blank {
+	if len(rows) != 11 || !strings.Contains(rows[4], "› 日本語q") || rows[5] != blank || rows[6] != blank {
 		t.Fatal("entry area must reserve at least three padded rows")
 	}
 }
@@ -247,12 +255,18 @@ func TestRenderAgentInputLayoutBounds(t *testing.T) {
 							end = matches[i+1][0]
 						}
 						line := plain[match[1]:end]
+						if i == len(matches)-1 {
+							if line != "\x1b[?25h" || row < 1 || row > height || col < 1 || col > width {
+								t.Fatalf("invalid final cursor at %dx%d: row=%d col=%d suffix=%q", width, height, row, col, line)
+							}
+							continue
+						}
 						cells := displayWidth(line)
 						if row < 1 || row > height || col < 1 || col+cells-1 > width || cells != min(76, width) || !utf8.ValidString(line) || strings.ContainsAny(line, "\x1b\r\n\t\u202e") {
 							t.Fatalf("layout %dx%d row=%d col=%d cells=%d: %q", width, height, row, col, cells, line)
 						}
 					}
-					if color && output != "" && strings.Count(output, ";48;5;236m") != len(matches) {
+					if color && output != "" && strings.Count(output, ";48;5;236m") != len(matches)-1 {
 						t.Fatal("panel background does not cover every padded row")
 					}
 					if !color && sgr.MatchString(output) {
@@ -272,8 +286,42 @@ func TestRenderAgentInputNoColor(t *testing.T) {
 		if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(output) {
 			t.Fatal("default/NO_COLOR rendering contains color escapes")
 		}
-		if !strings.Contains(output, "╭") || !strings.Contains(output, "▏") {
-			t.Fatal("color-disabled modal lost its border or caret")
+		if !strings.Contains(output, "╭") || !strings.HasSuffix(output, "\x1b[?25h") || strings.Contains(output, "▏") {
+			t.Fatal("color-disabled modal lost its border or real cursor")
 		}
+	}
+}
+
+func TestRenderAgentInputCursorPosition(t *testing.T) {
+	cursor := regexp.MustCompile(`\x1b\[(\d+);(\d+)H\x1b\[\?25h$`)
+	for _, tc := range []struct {
+		name, text              string
+		width, height, row, col int
+	}{
+		{"placeholder", "", 100, 24, 11, 17},
+		{"Japanese", "日本語q", 100, 24, 11, 24},
+		{"combining", "e\u0301日", 100, 24, 11, 20},
+		{"wrapped Japanese", strings.Repeat("日", 40), 100, 24, 12, 25},
+		{"short terminal", "日本語q", 100, 8, 4, 24},
+		{"minimal height", "日本語q", 100, 4, 3, 24},
+		{"narrow wrapped", "日本語q", 12, 24, 12, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := agentTestScreen(t, nil)
+			agentTestKey(t, s, "i")
+			typeAgentInput(t, s, tc.text)
+			for _, color := range []bool{false, true} {
+				output := s.renderAgentInput(tc.width, tc.height, color)
+				match := cursor.FindStringSubmatch(output)
+				if match == nil {
+					t.Fatalf("missing final cursor position/show: %q", output)
+				}
+				row, _ := strconv.Atoi(match[1])
+				col, _ := strconv.Atoi(match[2])
+				if row != tc.row || col != tc.col || strings.Contains(output, "▏") {
+					t.Fatalf("cursor = %d,%d, want %d,%d (no fake caret)", row, col, tc.row, tc.col)
+				}
+			}
+		})
 	}
 }

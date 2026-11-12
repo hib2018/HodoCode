@@ -106,13 +106,17 @@ func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
 	if displayWidth(target) > inner {
 		target = displaySlice(target, 0, inner-1) + "…"
 	}
+	// Reserve one cell at the end so the IME anchor never lands on the border.
 	text := wrapPaneText("› "+in.text+"▏", inner)
-	if in.text == "" {
-		text = []string{"› ▏指示を入力してください…"}
-	}
+	text[len(text)-1] = strings.TrimSuffix(text[len(text)-1], "▏")
+	cursorColumn := displayWidth(text[len(text)-1])
 	available := max(1, min(8, height-8))
 	if len(text) > available {
 		text = text[len(text)-available:]
+	}
+	cursorLine := len(text) - 1
+	if in.text == "" {
+		text[cursorLine] += "指示を入力してください…"
 	}
 	if height >= 11 {
 		for len(text) < 3 {
@@ -123,14 +127,16 @@ func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
 	if in.status != "" {
 		status = "! " + in.status
 	}
-	const safety = "Enterで送信前確認へ（まだ送信しません）"
-	const footer = "Enter:確認へ  Esc:取消  Ctrl+U:消去"
+	const safety = "Enterでfxへ送信します"
+	const footer = "Enter:送信  Esc:取消  Ctrl+U:消去"
+	cursorRow := 4 + cursorLine
 	lines := []string{"追加指示", target, ""}
 	lines = append(lines, text...)
 	lines = append(lines, status, safety, footer)
 	if height < 11 {
 		// Keep the entry and controls useful when the full panel cannot fit.
-		lines = []string{"追加指示", text[len(text)-1]}
+		lines = []string{"追加指示", text[cursorLine]}
+		cursorRow = 2
 		if status != "" {
 			lines = append(lines, status)
 		}
@@ -157,5 +163,6 @@ func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
 		row(i+1, "│ "+displaySlice(line, 0, inner)+" │")
 	}
 	row(len(lines)+1, "╰"+strings.Repeat("─", boxWidth-2)+"╯")
+	fmt.Fprintf(&out, "\x1b[%d;%dH\x1b[?25h", y+cursorRow, x+2+cursorColumn)
 	return out.String()
 }

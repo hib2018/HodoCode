@@ -43,11 +43,17 @@ func TestScreenChromeLayout(t *testing.T) {
 
 func TestScreenContextualChrome(t *testing.T) {
 	s := agentTestScreen(t, nil)
+	s.agent.options.excludes = []string{"main.go"}
 	agentTestKey(t, s, "e")
 	frame := sgrPattern.ReplaceAllString(s.render(120, 24, true), "")
-	for _, want := range []string{"AGENT  送信前の確認", "y 送信", "n 取消"} {
+	for _, want := range []string{"AGENT  エージェントの解説", "e AI送信", "s 構文"} {
 		if !strings.Contains(frame, want) {
-			t.Fatalf("confirmation missing %q", want)
+			t.Fatalf("agent chrome missing %q", want)
+		}
+	}
+	for _, obsolete := range []string{"送信前の確認", "y 送信", "n 取消"} {
+		if strings.Contains(frame, obsolete) {
+			t.Fatalf("obsolete confirmation chrome %q", obsolete)
 		}
 	}
 	agentTestKey(t, s, "i")
@@ -58,11 +64,9 @@ func TestScreenContextualChrome(t *testing.T) {
 
 func TestUIBarAndHelp(t *testing.T) {
 	for width := 41; width < 240; width++ {
-		for _, confirm := range []bool{false, true} {
-			help := screenHelp(width, confirm)
-			if displayWidth(help) > width || !strings.Contains(help, "q 終了") {
-				t.Fatalf("help at %d: %q", width, help)
-			}
+		help := screenHelp(width)
+		if displayWidth(help) > width || !strings.Contains(help, "q 終了") || !strings.Contains(help, "e AI送信") {
+			t.Fatalf("help at %d: %q", width, help)
 		}
 		bar := uiBar("日本語"+strings.Repeat("x", 300), " 42% · 解説 1/3 ", width)
 		if displayWidth(bar) != width || !strings.HasSuffix(bar, " 42% · 解説 1/3 ") {

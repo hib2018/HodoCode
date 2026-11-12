@@ -63,45 +63,48 @@ func agentTestResult(t *testing.T, s *screen) agentResult {
 	}
 }
 
-func TestAgentPreviewDoesNotTransmit(t *testing.T) {
+func TestAgentStartsImmediatelyAndIgnoresConfirmationKeys(t *testing.T) {
 	var calls atomic.Int32
-	s := agentTestScreen(t, func(context.Context, string) (string, error) {
+	started := make(chan struct{})
+	s := agentTestScreen(t, func(ctx context.Context, _ string) (string, error) {
 		calls.Add(1)
-		return "", errors.New("unexpected transmission")
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
 	})
-	if s.agentKey(context.Background(), "y") {
-		t.Fatal("confirmation without a preview was accepted")
+	for _, key := range []string{"y", "n"} {
+		if s.agentKey(context.Background(), key) {
+			t.Fatalf("agent handled obsolete confirmation key %q", key)
+		}
 	}
 	s.explanationTop = 9
 	agentTestKey(t, s, "e")
-	if !s.agent.visible || s.agent.pending == nil || s.agent.pendingID != s.current || s.explanationTop != 0 {
-		t.Fatal("preview did not set visible pending state and reset scrolling")
+	if !s.agent.visible || s.agent.cancel == nil || s.explanationTop != 0 || s.syntaxTop != 9 {
+		t.Fatal("e did not immediately start generation and preserve syntax scrolling")
 	}
-	preview := strings.Join(s.paneLines(200, 20), "\n")
-	for _, want := range []string{"まだ送信していません", "y: fxへ送信", "通信は2回", "Explain the flow", "Target: " + s.current, "main.go:2-5", "example.com/screen.Second"} {
-		if !strings.Contains(preview, want) {
-			t.Errorf("preview missing %q: %s", want, preview)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("e did not call the runner")
+	}
+	for _, key := range []string{"y", "n"} {
+		if s.agentKey(context.Background(), key) {
+			t.Fatalf("agent handled obsolete confirmation key %q during generation", key)
 		}
 	}
-	for _, secret := range []string{"LITERAL_SECRET", "COMMENT_SECRET", "println"} {
-		if strings.Contains(preview, secret) {
-			t.Errorf("preview contains source %q", secret)
-		}
-	}
-	agentTestKey(t, s, "n")
-	if s.agent.pending != nil || s.agent.pendingID != "" || !strings.Contains(s.agent.texts[s.current], "送信を中止") {
-		t.Fatal("declining did not discard the pending request")
-	}
-	if s.agentKey(context.Background(), "y") || calls.Load() != 0 {
-		t.Fatal("preview/decline transmitted a request")
+	agentTestKey(t, s, "e")
+	if calls.Load() != 1 {
+		t.Fatal("e started a duplicate job")
 	}
 	agentTestKey(t, s, "s")
-	if s.agent.visible || !reflect.DeepEqual(s.paneLines(40, 10), s.explanationLines(40, 10)) {
-		t.Fatal("s did not restore syntax explanations")
+	if s.agent.visible || s.explanationTop != 9 || !reflect.DeepEqual(s.paneLines(40, 10), s.explanationLines(40, 10)) {
+		t.Fatal("s did not restore syntax explanations and scrolling")
 	}
+	s.agent.cancel()
+	agentTestResult(t, s)
 }
 
-func TestAgentConfirmationTwoCallsAndNavigationCache(t *testing.T) {
+func TestAgentImmediateTwoCallsAndNavigationCache(t *testing.T) {
 	var prompts []string
 	answerStarted := make(chan struct{})
 	release := make(chan struct{})
@@ -122,17 +125,10 @@ func TestAgentConfirmationTwoCallsAndNavigationCache(t *testing.T) {
 			return "", ctx.Err()
 		}
 	})
-	agentTestKey(t, s, "e")
-	// A pending confirmation belongs to the function that was previewed.
-	press(t, s, "\r")
-	if s.agentKey(context.Background(), "y") {
-		t.Fatal("confirmation from a different function was accepted")
-	}
-	press(t, s, "b")
 	s.explanationTop = 8
-	agentTestKey(t, s, "y")
-	if s.agent.pending != nil || s.agent.pendingID != "" || s.agent.cancel == nil || s.explanationTop != 0 {
-		t.Fatal("confirmation did not consume the preview and start a job")
+	agentTestKey(t, s, "e")
+	if s.agent.cancel == nil || s.explanationTop != 0 || s.syntaxTop != 8 {
+		t.Fatal("e did not start a job and save syntax scroll")
 	}
 	select {
 	case <-answerStarted:
@@ -140,7 +136,7 @@ func TestAgentConfirmationTwoCallsAndNavigationCache(t *testing.T) {
 		t.Fatal("answer runner did not start")
 	}
 	if s.agentKey(context.Background(), "y") {
-		t.Fatal("duplicate confirmation was accepted")
+		t.Fatal("obsolete confirmation was accepted")
 	}
 	press(t, s, "\r")
 	other := s.current
@@ -186,7 +182,7 @@ func TestAgentExcludedTargetDoesNotTransmit(t *testing.T) {
 	})
 	s.agent.options.excludes = []string{"main.go"}
 	agentTestKey(t, s, "e")
-	if s.agent.pending != nil || s.agent.pendingID != "" || !strings.Contains(s.agent.texts[s.current], "target is excluded or blocked") {
+	if s.agent.cancel != nil || !strings.Contains(s.agent.texts[s.current], "target is excluded or blocked") {
 		t.Fatalf("excluded target was not rejected: %+v", s.agent)
 	}
 	if s.agentKey(context.Background(), "y") || calls.Load() != 0 {
@@ -231,7 +227,6 @@ func TestAgentScreenLoopExitCancelsRunner(t *testing.T) {
 				return "", ctx.Err()
 			})
 			agentTestKey(t, s, "e")
-			agentTestKey(t, s, "y")
 			select {
 			case <-started:
 			case <-time.After(5 * time.Second):
@@ -282,8 +277,6 @@ func TestAgentScreenLoopDisplaysAnswer(t *testing.T) {
 		case 1:
 			return 'e', true, nil
 		case 2:
-			return 'y', true, nil
-		case 3:
 			if s.agent.cancel == nil {
 				return 'q', true, nil
 			}
@@ -303,8 +296,8 @@ func TestAgentScreenLoopDisplaysAnswer(t *testing.T) {
 	}, false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "ANSWER_FROM_AGENT") || !strings.Contains(output.String(), "まだ送信していません") {
-		t.Fatal("screen loop did not render preview and answer")
+	if !strings.Contains(output.String(), "ANSWER_FROM_AGENT") {
+		t.Fatal("screen loop did not render the answer")
 	}
 }
 
@@ -339,7 +332,6 @@ func TestAgentTimeout(t *testing.T) {
 	})
 	s.agent.options.timeout = time.Second
 	agentTestKey(t, s, "e")
-	agentTestKey(t, s, "y")
 	s.explanationTop = 7
 	result := agentTestResult(t, s)
 	if !errors.Is(result.err, context.DeadlineExceeded) || calls.Load() != 1 {
@@ -347,5 +339,28 @@ func TestAgentTimeout(t *testing.T) {
 	}
 	if s.explanationTop != 0 || !strings.Contains(s.agent.texts[s.current], "解説に失敗") || !strings.Contains(s.agent.texts[s.current], "context deadline exceeded") {
 		t.Fatalf("timeout was not displayed: %q", s.agent.texts[s.current])
+	}
+}
+
+func TestAgentResultWhileSyntaxVisiblePreservesScroll(t *testing.T) {
+	s := agentTestScreen(t, func(context.Context, string) (string, error) {
+		return "", errors.New("offline")
+	})
+	s.explanationTop = 4
+	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "s")
+	s.explanationTop = 7
+	agentTestResult(t, s)
+	if s.agent.visible || s.explanationTop != 7 {
+		t.Fatal("incoming agent failure reset the active syntax scroll")
+	}
+	// A successful reply must likewise stay hidden until chat is reopened.
+	s.agent.results <- agentResult{id: s.current, text: "ANSWER"}
+	if !s.receiveAgentResult() {
+		t.Fatal("successful result was not received")
+	}
+	s.paneLines(40, 10)
+	if s.agent.visible || s.explanationTop != 7 {
+		t.Fatal("incoming agent answer reset the active syntax scroll")
 	}
 }

@@ -20,7 +20,7 @@ func typeAgentInput(t *testing.T, s *screen, text string) {
 	}
 }
 
-func TestAgentInputHistoryAndExplicitSend(t *testing.T) {
+func TestAgentInputHistoryAndEnterSend(t *testing.T) {
 	var calls atomic.Int32
 	var prompts []string
 	s := agentTestScreen(t, func(_ context.Context, prompt string) (string, error) {
@@ -32,17 +32,13 @@ func TestAgentInputHistoryAndExplicitSend(t *testing.T) {
 	})
 	id := s.current
 	for _, instruction := range []string{"日本語で説明してq", "呼び出し元も説明して"} {
+		agentTestKey(t, s, "s") // Follow-up from syntax view must still send the prior conversation.
 		agentTestKey(t, s, "i")
 		typeAgentInput(t, s, instruction)
-		before := calls.Load()
 		typeAgentInput(t, s, "\r")
-		if s.agent.input != nil || s.agent.pending == nil || calls.Load() != before {
-			t.Fatal("commit did not preview without sending")
+		if s.agent.input != nil || s.agent.cancel == nil || s.agent.questions[id] != instruction {
+			t.Fatal("Enter did not close input and start generation")
 		}
-		if !strings.Contains(s.agent.texts[id], instruction) {
-			t.Fatal("preview missing instruction")
-		}
-		agentTestKey(t, s, "y")
 		if result := agentTestResult(t, s); result.err != nil {
 			t.Fatal(result.err)
 		}
@@ -66,6 +62,7 @@ func TestAgentInputHistoryAndExplicitSend(t *testing.T) {
 	if len(s.agent.history[s.current]) != 0 {
 		t.Fatal("history leaked to another function")
 	}
+	s.agent.options.excludes = []string{"main.go"}
 	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "別の関数\r")
 	if s.agent.questions[s.current] != "別の関数" || len(s.agent.history[id]) != 4 {
@@ -82,8 +79,7 @@ func TestAgentInputEditingAndCancel(t *testing.T) {
 	if s.agentInputByte(context.Background(), 'q') || s.agentInputIdle() || s.renderAgentInput(80, 24) != "" {
 		t.Fatal("closed input handled a byte or rendered")
 	}
-	agentTestKey(t, s, "e")
-	pending := s.agent.pending
+	s.agent.texts[s.current] = "EXISTING_CHAT"
 	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "日q本\x7f")
 	if s.agent.input.text != "日q" || !utf8.ValidString(s.agent.input.text) {
@@ -98,7 +94,7 @@ func TestAgentInputEditingAndCancel(t *testing.T) {
 		t.Fatal("clear/empty commit mutated history or closed input")
 	}
 	typeAgentInput(t, s, "取消\x1b")
-	if !s.agentInputIdle() || s.agent.input != nil || s.agent.pending != pending || len(s.agent.history) != 0 {
+	if !s.agentInputIdle() || s.agent.input != nil || s.agent.texts[s.current] != "EXISTING_CHAT" || len(s.agent.history) != 0 {
 		t.Fatal("Escape did not cancel without mutation")
 	}
 	for _, b := range []byte{3, 4} {
@@ -116,6 +112,7 @@ func TestAgentInputEditingAndCancel(t *testing.T) {
 
 func TestAgentInputSizeBounds(t *testing.T) {
 	s := agentTestScreen(t, nil)
+	s.agent.options.excludes = []string{"main.go"}
 	id := s.current
 	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, strings.Repeat("x", maxAgentPurpose+1))
@@ -123,13 +120,13 @@ func TestAgentInputSizeBounds(t *testing.T) {
 		t.Fatal("draft size bound failed")
 	}
 	typeAgentInput(t, s, "\r")
-	if s.agent.input != nil || len(s.agent.questions[id]) != maxAgentPurpose || s.agent.pending == nil {
+	if s.agent.input != nil || len(s.agent.questions[id]) != maxAgentPurpose || s.agent.cancel != nil {
 		t.Fatal("exactly 8KiB question was not accepted independently of purpose")
 	}
 	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "日\r")
 	if s.agent.input != nil || s.agent.questions[id] != "日" || len(s.agent.history) != 0 {
-		t.Fatal("new question was accumulated instead of replacing the unsent draft")
+		t.Fatal("new question was accumulated instead of replacing the blocked question")
 	}
 	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "\x15"+strings.Repeat("日", maxAgentPurpose/3+1))
@@ -150,12 +147,17 @@ func TestAgentInputGenerationBlocked(t *testing.T) {
 
 func TestAgentInputScreenLoop(t *testing.T) {
 	for _, cancel := range []bool{false, true} {
-		s := agentTestScreen(t, nil)
+		var calls atomic.Int32
+		s := agentTestScreen(t, func(context.Context, string) (string, error) {
+			calls.Add(1)
+			return "", nil
+		})
+		s.agent.options.excludes = []string{"main.go"}
 		input := []byte("i日本語q")
 		if cancel {
 			input = append(input, '\x1b', 0, 'q')
 		} else {
-			input = append(input, '\r', 'n', 'q')
+			input = append(input, '\r', 'q')
 		}
 		var out bytes.Buffer
 		read := func() (byte, bool, error) {

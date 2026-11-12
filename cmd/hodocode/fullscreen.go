@@ -16,7 +16,7 @@ import (
 type screenPosition struct {
 	current                   string
 	selected, top, horizontal int
-	explanationTop            int
+	explanationTop, syntaxTop int
 	cursorRow, cursorColumn   int
 }
 
@@ -142,6 +142,17 @@ func (s *screen) follow(height, width int) {
 }
 
 func (s *screen) key(key string, height, codeWidth int) (bool, error) {
+	if a := s.agent; a != nil && a.visible {
+		id, top := s.current, s.explanationTop
+		defer func() {
+			if s.current != id {
+				a.scroll[id] = top
+				s.explanationTop = a.scroll[s.current]
+			} else if key != "[" && key != "]" {
+				s.explanationTop = top
+			}
+		}()
+	}
 	switch key {
 	case "q", "\x03", "\x04":
 		return true, nil
@@ -320,8 +331,7 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	}
 	progress := fmt.Sprintf(" %d%% · 解説 %d/%d ", (s.cursorRow+1)*100/max(1, len(s.code)), s.explanationTop+1, max(1, len(notes)-body+1))
 	writeRow(height-1, uiBar(mode+status, progress, width), "38;5;252;48;5;237")
-	confirming := s.agent != nil && s.agent.visible && s.agent.pending != nil && s.agent.pendingID == s.current
-	writeRow(height, screenHelp(width, confirming), "38;5;245")
+	writeRow(height, screenHelp(width), "38;5;245")
 	return b.String()
 }
 

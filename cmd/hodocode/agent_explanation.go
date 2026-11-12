@@ -23,22 +23,20 @@ type agentResult struct {
 }
 
 type agentPane struct {
-	options         agentOptions
-	visible         bool
-	texts           map[string]string
-	pending         *explain.Request
-	pendingID       string
-	results         chan agentResult
-	cancel          context.CancelFunc
-	history         map[string][]explain.Message
-	questions       map[string]string
-	focusReply      map[string]bool
-	pendingQuestion string
-	input           *agentInput
+	options    agentOptions
+	visible    bool
+	texts      map[string]string
+	results    chan agentResult
+	cancel     context.CancelFunc
+	history    map[string][]explain.Message
+	questions  map[string]string
+	focusReply map[string]bool
+	scroll     map[string]int
+	input      *agentInput
 }
 
 func newAgentPane(options agentOptions) *agentPane {
-	return &agentPane{options: options, texts: map[string]string{}, results: make(chan agentResult, 1), history: map[string][]explain.Message{}, questions: map[string]string{}, focusReply: map[string]bool{}}
+	return &agentPane{options: options, texts: map[string]string{}, results: make(chan agentResult, 1), history: map[string][]explain.Message{}, questions: map[string]string{}, focusReply: map[string]bool{}, scroll: map[string]int{}}
 }
 
 // All pane state stays on the screen loop; the worker only owns its snapshot.
@@ -49,11 +47,17 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 	}
 	switch key {
 	case "s":
-		a.visible = false
-		s.explanationTop = 0
+		if a.visible {
+			a.scroll[s.current] = s.explanationTop
+			a.visible = false
+			s.explanationTop = s.syntaxTop
+		}
 	case "i":
 		if a.cancel != nil {
-			a.visible = true
+			if !a.visible {
+				s.syntaxTop = s.explanationTop
+				a.visible = true
+			}
 			a.texts[s.current] = "生成中は追加指示を入力できません。完了してから i を押してください。"
 			s.explanationTop = 0
 			return true
@@ -62,13 +66,14 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 			a.input = &agentInput{id: s.current}
 		}
 	case "e":
-		delete(a.focusReply, s.current)
-		a.visible = true
-		s.explanationTop = 0
+		if !a.visible {
+			s.syntaxTop = s.explanationTop
+			a.visible = true
+			s.explanationTop = a.scroll[s.current]
+		}
 		if a.cancel != nil {
 			return true
 		}
-		a.pending, a.pendingID = nil, ""
 		var edges []analyze.Edge
 		for _, edge := range s.flow.edges {
 			if edge.From == s.current {
@@ -93,22 +98,8 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 			a.texts[s.current] = "解説の準備に失敗しました（送信していません）。\n" + err.Error()
 			return true
 		}
-		a.pending, a.pendingID, a.pendingQuestion = req, s.current, question
-		a.texts[s.current] = "送信前の確認（まだ送信していません）\ny: fxへ送信 / n:中止 / []:スクロール\n候補一覧を最後まで確認してください。\n文字列・コメントは空白化しますが、識別子などの機密情報は残り得ます。会話履歴と今回の質問は加工せず送信します。fxはOSサンドボックスではありません。送信先・料金はfx設定に従い、通信は2回です。\n目的: " + purpose + "\n今回の質問: " + question + "\n\n" + req.Preview()
-	case "n":
-		if a.pendingID != s.current || a.pending == nil {
-			return false
-		}
-		a.pending, a.pendingID = nil, ""
-		a.texts[s.current] = "送信を中止しました。e:確認し直す / s:構文解説"
-		s.explanationTop = 0
-	case "y":
-		if !a.visible || a.pending == nil || a.pendingID != s.current || a.cancel != nil {
-			return false
-		}
-		req, id, question := a.pending, a.pendingID, a.pendingQuestion
-		a.pending, a.pendingID, a.pendingQuestion = nil, "", ""
-		history := a.history[id]
+		id := s.current
+		history = a.history[id]
 		if n := len(history); question != "" && (n == 0 || history[n-1].Role != "user" || history[n-1].Content != question) {
 			a.history[id] = append(history, explain.Message{Role: "user", Content: question})
 		}
@@ -144,7 +135,8 @@ func (s *screen) receiveAgentResult() bool {
 			a.focusReply[result.id] = true
 			a.texts[result.id] = "エージェントの解説（回答の根拠を確認してください）\ni:追加質問 / s:構文解説"
 		}
-		if s.current == result.id {
+		a.scroll[result.id] = 0
+		if a.visible && s.current == result.id {
 			s.explanationTop = 0
 		}
 		return true
@@ -179,7 +171,7 @@ func (s *screen) paneLines(width, height int) []string {
 	}
 	text := s.agent.texts[s.current]
 	if text == "" {
-		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / e:送信前の確認 / s:構文解説", s.current)
+		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / e:fxへ送信 / s:構文解説", s.current)
 	}
 	lines := wrapPaneText(text, width)
 	lastReply := 0

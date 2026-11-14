@@ -38,8 +38,12 @@ func TestCallTreeManualExpansion(t *testing.T) {
 	if a.open || len(s.flow.expanded) != 1 {
 		t.Fatal("selection must not expand")
 	}
-	press(t, s, "right")
-	if !a.open || len(tree.rows()) != 6 || len(s.flow.expanded) != 2 {
+	press(t, s, "h", "l", "left", "right")
+	if tree.selected != a || a.open || len(s.flow.expanded) != 1 {
+		t.Fatal("old open/close keys must not change selection or expand")
+	}
+	press(t, s, " ")
+	if tree.selected != a || !a.open || len(tree.rows()) != 6 || len(s.flow.expanded) != 2 {
 		t.Fatal("explicit expansion failed")
 	}
 	press(t, s, "j", "j") // C, then B
@@ -47,25 +51,29 @@ func TestCallTreeManualExpansion(t *testing.T) {
 	if b.site.Name != "B" || !a.open || b.open {
 		t.Fatal("moving to sibling must preserve open branches")
 	}
-	press(t, s, "l")
+	press(t, s, " ")
 	if !a.open || !b.open {
 		t.Fatal("multiple branches must remain open")
 	}
-	press(t, s, "h")
-	if b.open || !a.open {
+	press(t, s, "h", "l", "left", "right")
+	if tree.selected != b || !b.open {
+		t.Fatal("old open/close keys must not close or change selection")
+	}
+	press(t, s, " ")
+	if tree.selected != b || b.open || !a.open {
 		t.Fatal("collapse must affect only selected branch")
 	}
-	press(t, s, "k", "l") // C; expand C to expose A as a cycle
+	press(t, s, "k", " ") // C; expand C to expose A as a cycle
 	cycle := tree.selected.children[0]
 	if !cycle.cycle {
 		t.Fatal("recursive ancestor not marked")
 	}
-	press(t, s, "j", "l")
+	press(t, s, "j", " ")
 	if tree.selected != cycle || cycle.open || len(cycle.children) != 0 {
 		t.Fatal("cycle expanded")
 	}
 	cached := len(s.flow.expanded)
-	press(t, s, "h", "h", "l")
+	press(t, s, "k", " ", " ")
 	if len(s.flow.expanded) != cached {
 		t.Fatal("reopening must reuse parsed results")
 	}
@@ -81,7 +89,7 @@ func TestCallTreeUnavailableAndCancel(t *testing.T) {
 		}
 		s.tree.selected = row.node
 		count := len(s.flow.expanded)
-		press(t, s, "l", "\r")
+		press(t, s, " ", "\r")
 		if row.node.open || !s.tree.visible || s.screenPosition != before || len(s.flow.expanded) != count {
 			t.Fatal("unavailable node changed code or expanded")
 		}
@@ -98,7 +106,7 @@ func TestCallTreeUnavailableAndCancel(t *testing.T) {
 func TestCallTreeJumpHistoryAndReveal(t *testing.T) {
 	s := treeScreen(t)
 	before := s.screenPosition
-	press(t, s, "t", "j", "l", "j", "\r") // main -> A -> C; jump directly to C
+	press(t, s, "t", "j", " ", "j", "\r") // main -> A -> C; jump directly to C
 	if !strings.HasSuffix(s.current, ".C") || len(s.history) != 1 || s.tree.visible {
 		t.Fatal("tree jump failed")
 	}
@@ -155,7 +163,7 @@ func TestCallTreeLoopEscapeAndModalKeys(t *testing.T) {
 	s.agent = newAgentPane(agentOptions{excludes: []string{"main.go"}})
 	before := s.screenPosition
 	// Read timeout after Escape must close the popup, not quit or feed agent actions.
-	input := []byte{'t', 'j', 'e', 'i', 0x1b, 0, 'q'}
+	input := []byte{'t', 'j', ' ', ' ', 'e', 'i', 0x1b, 0, 'q'}
 	index := 0
 	err := screenLoop(context.Background(), s, io.Discard, func() (byte, bool, error) {
 		if index >= len(input) {
@@ -170,6 +178,9 @@ func TestCallTreeLoopEscapeAndModalKeys(t *testing.T) {
 	}
 	if s.tree.visible || s.screenPosition != before {
 		t.Fatal("Escape did not restore source view")
+	}
+	if n := s.tree.selected; !n.loaded || n.open {
+		t.Fatal("Space bytes did not toggle the selected branch open and closed")
 	}
 	if s.agent.visible || s.agent.input != nil || len(s.agent.texts) != 0 {
 		t.Fatal("popup keys reached the agent pane")

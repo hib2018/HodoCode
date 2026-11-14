@@ -164,17 +164,11 @@ func (s *screen) treeKey(key string, height, codeWidth int) (bool, error) {
 		t.selected = rows[max(0, index-max(1, height-5))].node
 	case "pagedown":
 		t.selected = rows[min(len(rows)-1, index+max(1, height-5))].node
-	case "right", "l":
-		if n.open && len(n.children) > 0 {
-			t.selected = n.children[0]
-		} else if err := s.expandTree(n); err != nil {
-			return false, err
-		}
-	case "left", "h":
+	case " ":
 		if n.open {
 			n.open = false
-		} else if n.parent != nil {
-			t.selected = n.parent
+		} else if err := s.expandTree(n); err != nil {
+			return false, err
 		}
 	case "\r", "\n":
 		if s.reason(n.site) != "" {
@@ -231,7 +225,7 @@ func (s *screen) renderTree(width, height int, color bool) string {
 	}
 	border := "+" + strings.Repeat("-", inner) + "+"
 	write(0, border, false)
-	write(1, "│"+displaySlice(" 呼び出しツリー  j/k 選択 · h/l 開閉 · Enter 移動 · Esc 閉じる", 0, inner)+"│", false)
+	write(1, "│"+displaySlice(" 呼び出しツリー  j/k 選択 · Space 開閉 · Enter 移動 · Esc 閉じる", 0, inner)+"│", false)
 	for i := 0; i < body; i++ {
 		text := ""
 		active := false

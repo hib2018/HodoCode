@@ -2,8 +2,8 @@
 //
 // All modules physically inside Root are indexed without fetching dependencies.
 // Build constraints follow go/build.Default; _test.go, vendor, hidden
-// directories/files and symlinks are excluded. Dependencies outside Root are
-// not loaded from source; unavailable type information yields unknown calls.
+// directories/files and symlinks are excluded. SDK navigation and restricted
+// dependency definitions load local source lazily, without builds or downloads.
 package analyze
 
 import (
@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build"
-	"go/importer"
 	"go/parser"
 	"go/printer"
 	"go/token"
@@ -47,8 +46,13 @@ type CallSite struct {
 	Name                    string
 }
 
+// Project owns a source snapshot and mutable lazy caches. Serialize analyzer
+// operations and Functions reads while navigation or lookups are loading source.
+// Reload after build, module or workspace configuration changes.
 type Project struct {
-	Root      string
+	Root string
+	// Functions starts with root declarations only. EnsureFunction may add SDK
+	// functions for local navigation; send/explain code must filter LocalFunction.
 	Functions map[string]Function
 	Imports   []Edge
 
@@ -56,7 +60,11 @@ type Project struct {
 	packages     map[string][]*ast.File
 	declarations map[string]*ast.FuncDecl
 	owners       map[string]string
-	sources      map[string][]byte
+	sources      map[string][]byte // Absolute physical filenames, never display labels.
+	local        map[string]bool
+	packageDirs  map[string]string
+	lookup       map[string]*sourcePackage
+	importers    map[string]*signatureImporter
 }
 
 // Load records declarations and imports without type-checking function bodies.
@@ -77,6 +85,9 @@ func Load(root string) (*Project, error) {
 	directories := map[string]sourceModule{}
 	modules := map[string]string{}
 	packageDirs := map[string]string{}
+	p.packageDirs = packageDirs
+	p.local = map[string]bool{}
+	p.lookup = map[string]*sourcePackage{}
 	err = filepath.WalkDir(root, func(filename string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -124,7 +135,7 @@ func Load(root string) (*Project, error) {
 			return relErr
 		}
 		relative = filepath.ToSlash(relative)
-		p.sources[relative] = source
+		p.sources[filename] = source
 		dir := filepath.Dir(filename)
 		moduleRelative, relErr := filepath.Rel(module.dir, dir)
 		if relErr != nil {
@@ -171,6 +182,7 @@ func Load(root string) (*Project, error) {
 				return fmt.Errorf("duplicate function %s", id)
 			}
 			p.Functions[id] = Function{ID: id, File: relative, Line: p.fset.PositionFor(fn.Pos(), false).Line, End: p.fset.PositionFor(fn.End(), false).Line}
+			p.local[id] = true
 			p.declarations[id] = fn
 			p.owners[id] = pkg
 		}
@@ -193,8 +205,9 @@ func (p *Project) Source(id string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("function %q not found", id)
 	}
-	source := p.sources[p.Functions[id].File]
-	start := p.fset.PositionFor(fn.Pos(), false).Offset
+	pos := p.fset.PositionFor(fn.Pos(), false)
+	source := p.sources[pos.Filename]
+	start := pos.Offset
 	end := p.fset.PositionFor(fn.End(), false).Offset
 	return string(source[start:end]), nil
 }
@@ -239,8 +252,8 @@ func (p *Project) Resolve(name string) (string, error) {
 
 // Calls returns deduplicated one-level edges for an exact function ID. It never
 // traverses callees or nested function literal bodies. Concrete methods resolve
-// to indexed declarations; interface calls, function values and unresolved symbols
-// are conservative unknowns.
+// to root or SDK IDs without registering SDK targets; interface calls, function
+// values and unresolved symbols are conservative unknowns.
 func (p *Project) Calls(id string) ([]Edge, error) {
 	sites, err := p.CallSites(id)
 	if err != nil {
@@ -262,7 +275,7 @@ func (p *Project) Calls(id string) ([]Edge, error) {
 func (p *Project) MainFunctions() []string {
 	var ids []string
 	for id, fn := range p.declarations {
-		if fn.Recv == nil && fn.Name.Name == "main" && p.packages[p.owners[id]][0].Name.Name == "main" {
+		if p.LocalFunction(id) && fn.Recv == nil && fn.Name.Name == "main" && p.packages[p.owners[id]][0].Name.Name == "main" {
 			ids = append(ids, id)
 		}
 	}
@@ -282,8 +295,8 @@ func (p *Project) CallSites(id string) ([]CallSite, error) {
 		return nil, nil
 	}
 	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
-	loader := &signatureImporter{project: p, fallback: importer.Default(), cache: map[string]*types.Package{}, loading: map[string]bool{}}
-	config := types.Config{Importer: loader, Error: func(error) {}}
+	loader := p.newImporter(id, false)
+	config := types.Config{Importer: loader, Sizes: types.SizesFor(build.Default.Compiler, build.Default.GOARCH), Error: func(error) {}}
 	// Type errors (e.g. unavailable third-party imports) leave partial information;
 	// calls without a proven static target remain unknown rather than being guessed.
 	files, body := p.typeFiles(p.owners[id], fn)
@@ -336,7 +349,9 @@ func (p *Project) CallSites(id string) ([]CallSite, error) {
 						// A concrete selector may promote an embedded interface method.
 						if _, isInterface := named.Underlying().(*types.Interface); !isInterface {
 							target := obj.Pkg().Path() + "." + named.Obj().Name() + "." + obj.Name()
-							if _, indexed := p.Functions[target]; indexed {
+							_, indexed := p.Functions[target]
+							_, standard := standardDir(obj.Pkg().Path())
+							if indexed || standard {
 								edge.To = target
 								edge.Unknown = false
 							}
@@ -472,27 +487,108 @@ func omitBodies(node ast.Node, selected *ast.FuncDecl) ast.Node {
 }
 
 type signatureImporter struct {
-	project  *Project
-	fallback types.Importer
-	cache    map[string]*types.Package
-	loading  map[string]bool
+	project *Project
+	cache   map[string]*types.Package
+	loading map[string]bool
+	origin  string
+	source  bool
+	files   map[string][]*ast.File
+	labels  map[string]string
+	errors  map[string]error
+}
+
+// Keep checked import graphs for this snapshot, isolated by caller and policy.
+// The selected function is still checked separately on each navigation request.
+func (p *Project) newImporter(id string, source bool) *signatureImporter {
+	origin := p.packageDirs[p.owners[id]]
+	key := origin + "\x00" + p.owners[id] + "\x00" + strconv.FormatBool(source)
+	if cached := p.importers[key]; cached != nil {
+		return cached
+	}
+	loader := &signatureImporter{project: p, cache: map[string]*types.Package{}, loading: map[string]bool{}, origin: origin, source: source, files: map[string][]*ast.File{}, labels: map[string]string{}, errors: map[string]error{}}
+	if p.importers == nil {
+		p.importers = map[string]*signatureImporter{}
+	}
+	p.importers[key] = loader
+	return loader
 }
 
 func (i *signatureImporter) Import(pkg string) (*types.Package, error) {
+	return i.ImportFrom(pkg, i.origin, 0)
+}
+
+func (i *signatureImporter) ImportFrom(pkg, dir string, _ types.ImportMode) (*types.Package, error) {
+	if pkg == "unsafe" {
+		return types.Unsafe, nil
+	}
+	if sdkDirectory(dir) {
+		if _, standard := standardDir(pkg); !standard {
+			canonical := "vendor/" + pkg
+			if _, vendored := standardDir(canonical); !vendored {
+				return nil, fmt.Errorf("SDK import source unavailable: %s", pkg)
+			}
+			pkg = canonical
+		}
+	}
+	return i.importPackage(pkg)
+}
+
+func (i *signatureImporter) importPackage(pkg string) (result *types.Package, err error) {
+	if previous := i.errors[pkg]; previous != nil {
+		return nil, previous
+	}
+	defer func() {
+		if err != nil {
+			i.errors[pkg] = err
+		}
+	}()
 	if cached := i.cache[pkg]; cached != nil {
 		return cached, nil
 	}
-	if _, local := i.project.packages[pkg]; !local {
-		return i.fallback.Import(pkg)
+	files := i.project.packages[pkg]
+	_, standard := standardDir(pkg)
+	if standard {
+		files = nil
+	} // SDK imports never use a same-named root package.
+	// Canonical root indexing is retained within a module. A separately indexed
+	// module is not proof that the caller's build selects it.
+	indexedDir := i.project.packageDirs[pkg]
+	if len(files) != 0 && !standard && moduleDirectory(indexedDir) != moduleDirectory(i.origin) {
+		if i.source {
+			files = nil // Resolve definitions from the caller's actual build graph.
+		} else {
+			selected, err := dependencyDir(i.origin, pkg)
+			if err == nil && selected.dir != indexedDir {
+				return nil, fmt.Errorf("indexed package %s is not selected by caller", pkg)
+			}
+			// shortcut: retain canonical Calls when offline selection is unavailable;
+			// remove if repository-wide canonical navigation is retired. Definitions
+			// never use this fallback.
+		}
 	}
+	if len(files) == 0 {
+		if !i.source {
+			if !standard {
+				return nil, fmt.Errorf("type information unavailable: %s", pkg)
+			}
+		}
+		source := i.project.sourcePackage(pkg, i.origin, !i.source)
+		if source.err != nil {
+			return nil, source.err
+		}
+		files = source.files
+		for filename, label := range source.labels {
+			i.labels[filename] = label
+		}
+	}
+	i.files[pkg] = files
 	if i.loading[pkg] {
 		return nil, fmt.Errorf("import cycle: %s", pkg)
 	}
 	i.loading[pkg] = true
 	defer delete(i.loading, pkg)
-	config := types.Config{Importer: i, IgnoreFuncBodies: true, Error: func(error) {}}
-	files, _ := i.project.typeFiles(pkg, nil)
-	result, err := config.Check(pkg, i.project.fset, files, nil)
+	config := types.Config{Importer: i, IgnoreFuncBodies: true, Sizes: types.SizesFor(build.Default.Compiler, build.Default.GOARCH), Error: func(error) {}}
+	result, err = config.Check(pkg, i.project.fset, files, nil)
 	if result != nil {
 		i.cache[pkg] = result
 		return result, nil

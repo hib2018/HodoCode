@@ -298,7 +298,7 @@ func TestLimitsAndErrors(t *testing.T) {
 	}
 	// Large retained source is rejected locally, before either transmission.
 	write(t, p.Root, "main.go", "package demo\nfunc Huge() {\n"+strings.Repeat(" println(1)\n", 14000)+"}\n")
-	p.Functions = map[string]analyze.Function{"p.Huge": {ID: "p.Huge", File: "main.go", Line: 2, End: 14003}}
+	p = &analyze.Project{Root: p.Root, Functions: map[string]analyze.Function{"p.Huge": {ID: "p.Huge", File: "main.go", Line: 2, End: 14003}}}
 	if _, err := Prepare(p, "p.Huge", "purpose", nil, nil); err == nil || !strings.Contains(err.Error(), "prompt exceeds") {
 		t.Fatalf("limit: %v", err)
 	}

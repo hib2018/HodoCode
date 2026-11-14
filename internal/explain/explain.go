@@ -81,8 +81,8 @@ func Prepare(p *analyze.Project, target, purpose string, edges []analyze.Edge, e
 	if p == nil {
 		return nil, fmt.Errorf("nil project")
 	}
-	if _, ok := p.Functions[target]; target == "" || !ok {
-		return nil, fmt.Errorf("target must be an exact indexed function ID")
+	if _, ok := p.Functions[target]; target == "" || !ok || !p.LocalFunction(target) {
+		return nil, fmt.Errorf("target must be an exact indexed local function ID")
 	}
 	if strings.TrimSpace(purpose) == "" || len(purpose) > maxPurpose {
 		return nil, fmt.Errorf("purpose must be nonempty and at most %d bytes", maxPurpose)
@@ -113,7 +113,9 @@ func Prepare(p *analyze.Project, target, purpose string, edges []analyze.Edge, e
 	r := &Request{target: target, purpose: purpose, snippets: map[string]string{}}
 	ids := make([]string, 0, len(p.Functions))
 	for id := range p.Functions {
-		ids = append(ids, id)
+		if p.LocalFunction(id) {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	files := map[string]*snapshot{}
@@ -183,7 +185,7 @@ func Prepare(p *analyze.Project, target, purpose string, edges []analyze.Edge, e
 		unknown := edge.Unknown
 		if !unknown {
 			if _, ok := r.snippets[target]; !ok {
-				if _, local := p.Functions[target]; local {
+				if p.LocalFunction(target) {
 					continue
 				}
 				unknown = true

@@ -71,7 +71,13 @@ func sourceExplanations(source string, symbols ...map[int]string) []syntaxExplan
 }
 
 func (s *screen) explanationLines(width, height int) []string {
+	lines, _ := s.localExplanation(width, height)
+	return lines
+}
+
+func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighlight) {
 	var lines []string
+	var styles [][]syntaxHighlight
 	var selected *syntaxExplanation
 	best := int(^uint(0) >> 1)
 	if height > 0 && s.cursorRow >= s.top && s.cursorRow < s.top+height {
@@ -130,24 +136,72 @@ func (s *screen) explanationLines(width, height int) []string {
 			help.reference,
 		}
 	}
+	textStyles := map[int][]syntaxHighlight{}
+	if selected != nil && selected.token == token.IDENT && selected.row < len(s.sourceOffsets) {
+		// Resolve the selected token, using byte offsets rather than rune columns.
+		offset := s.sourceOffsets[selected.row]
+		if selected.row < len(s.code) {
+			raw := []rune(s.rawLine(selected.row))
+			offset += len(string(raw[:min(selected.column, len(raw))]))
+		}
+		if definition, ok := s.definitions[offset]; ok {
+			var prefix []string
+			for _, snippet := range definition.Snippets {
+				prefix = append(prefix, snippet.File, "")
+				source := strings.ReplaceAll(snippet.Source, "\t", "    ")
+				highlights := sourceHighlights(source, snippet.Line)
+				for row, raw := range strings.Split(source, "\n") {
+					textStyles[len(prefix)+2] = highlights[row]
+					prefix = append(prefix, fmt.Sprintf("%d │ %s", snippet.Line+row, strings.TrimSuffix(raw, "\r")))
+				}
+				prefix = append(prefix, "")
+			}
+			if definition.Reason != "" {
+				prefix = append(prefix, definition.Reason, "")
+				texts = append(prefix, texts...)
+			} else if len(prefix) > 0 {
+				if strings.HasPrefix(selected.topic, "standard:") {
+					texts = append(prefix, texts...)
+				} else {
+					texts = prefix
+				}
+			}
+		}
+	}
 	texts = append([]string{"カーソル位置（外部送信なし）", ""}, texts...)
 	width = max(1, width)
-	for _, text := range strings.Split(strings.Join(texts, "\n"), "\n") {
-		text = strings.ReplaceAll(text, "\t", "    ")
-		line, cells := "", 0
-		for _, r := range text {
-			n := runeWidth(r)
-			// Retain even a wide rune when the requested width is only one cell.
-			if cells+n > width && line != "" {
+	for index, block := range texts {
+		for _, text := range strings.Split(block, "\n") {
+			spans := textStyles[index]
+			consumed := 0
+			appendLine := func(line string, cells int) {
 				lines = append(lines, line)
-				line, cells = "", 0
+				var wrapped []syntaxHighlight
+				for _, span := range spans {
+					start, end := max(consumed, span.start), min(consumed+cells, span.end)
+					if start < end {
+						wrapped = append(wrapped, syntaxHighlight{start - consumed, end - consumed, span.style})
+					}
+				}
+				styles = append(styles, wrapped)
+				consumed += cells
 			}
-			line += string(r)
-			cells += n
+			text = strings.ReplaceAll(text, "\t", "    ")
+			line, cells := "", 0
+			for _, r := range text {
+				n := runeWidth(r)
+				// Retain even a wide rune when the requested width is only one cell.
+				if cells+n > width && line != "" {
+					appendLine(line, cells)
+					line, cells = "", 0
+				}
+				line += string(r)
+				cells += n
+			}
+			appendLine(line, cells)
 		}
-		lines = append(lines, line)
 	}
-	return lines
+	return lines, styles
 }
 
 func screenCodeWidth(width int) int {

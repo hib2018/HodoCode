@@ -164,9 +164,9 @@ func TestTUIOnlyShowsCurrentCallees(t *testing.T) {
 		t.Fatal(err)
 	}
 	rule := strings.Repeat("─", 60)
-	want := "\n▶ Work（現在）\n   外部ソース: 1件、呼び出し先不明: 0件（選択不可・dで詳細表示）\n\nhelper/helper.go:5-5\n" + rule + "\n" + `func Work() { _ = strings.TrimSpace(" work ") }` + "\n" + rule + "\ndで詳細切替、qで終了 > "
+	want := "\n▶ Work（現在）\n└─ 1: strings.TrimSpace\n\nhelper/helper.go:5-5\n" + rule + "\n" + `func Work() { _ = strings.TrimSpace(" work ") }` + "\n" + rule + "\nEnterで strings.TrimSpace へ進む、番号で選択、qで終了 > "
 	if out.String() != want {
-		t.Fatalf("external call should be nonselectable, with original code below: %s", out.String())
+		t.Fatalf("SDK call should be selectable, with original code below: %s", out.String())
 	}
 }
 

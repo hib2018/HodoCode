@@ -50,15 +50,15 @@ func TestTUISingleChoiceEnter(t *testing.T) {
 
 func TestTUIDetailsToggle(t *testing.T) {
 	var out bytes.Buffer
-	err := run(context.Background(), []string{"tui", "--root", fixture(t), "--func", "helper.Work"}, strings.NewReader("d\nd\nq\n"), &out, io.Discard, nil)
+	err := run(context.Background(), []string{"tui", "--root", fixture(t), "--func", "Unchecked"}, strings.NewReader("d\nd\nq\n"), &out, io.Discard, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
-	if strings.Count(got, "外部ソース: 1件") != 2 || strings.Count(got, "└─ strings.TrimSpace（外部ソース・選択不可）") != 1 || strings.Count(got, "▶ Work（現在）") != 3 {
+	if strings.Count(got, "呼び出し先不明: 1件") != 2 || strings.Count(got, "└─ unknown: missingSymbol（呼び出し先不明・選択不可）") != 1 || strings.Count(got, "▶ Unchecked（現在）") != 3 {
 		t.Fatal(got)
 	}
-	if strings.Contains(got, "1: strings.TrimSpace") {
-		t.Fatal("external call became selectable")
+	if strings.Contains(got, "1: unknown: missingSymbol") {
+		t.Fatal("unknown call became selectable")
 	}
 }

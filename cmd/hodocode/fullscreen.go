@@ -28,15 +28,17 @@ type screen struct {
 	p    *analyze.Project
 	flow *flow
 	screenPosition
-	history      []screenPosition
-	sites        []analyze.CallSite
-	highlights   []callHighlight
-	code         []string
-	syntax       [][]syntaxHighlight
-	location     string
-	explanations []syntaxExplanation
-	agent        *agentPane
-	tree         *callTree
+	history       []screenPosition
+	sites         []analyze.CallSite
+	highlights    []callHighlight
+	code          []string
+	syntax        [][]syntaxHighlight
+	location      string
+	explanations  []syntaxExplanation
+	definitions   map[int]analyze.Definition
+	sourceOffsets []int
+	agent         *agentPane
+	tree          *callTree
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -76,18 +78,24 @@ func (s *screen) refresh() error {
 	fn := s.p.Functions[s.current]
 	s.location = fmt.Sprintf("%s:%d-%d", fn.File, fn.Line, fn.End)
 	s.code = nil
+	s.sourceOffsets = nil
 	s.syntax = sourceHighlights(source, fn.Line)
 	symbols := map[int]string{}
 	for _, site := range s.sites {
 		symbols[site.Offset] = "identifier"
-		if _, local := s.p.Functions[site.To]; !local && !site.Unknown && standardHelp[site.To].title != "" {
+		if !s.p.LocalFunction(site.To) && !site.Unknown && standardHelp[site.To].title != "" {
 			symbols[site.Offset] = "standard:" + site.To
 		}
 	}
 	s.explanations = sourceExplanations(source, symbols)
+	s.definitions, err = s.p.Definitions(s.current)
+	if err != nil {
+		return err
+	}
 	s.highlights = make([]callHighlight, len(s.sites))
 	offset := 0
 	for row, raw := range strings.Split(source, "\n") {
+		s.sourceOffsets = append(s.sourceOffsets, offset)
 		prefix := fmt.Sprintf("%d │ ", fn.Line+row)
 		line := prefix + strings.TrimSuffix(raw, "\r")
 		s.code = append(s.code, line)
@@ -112,8 +120,8 @@ func (s *screen) reason(site analyze.CallSite) string {
 	if site.Unknown {
 		return "呼び出し先を静的に特定できない"
 	}
-	if _, ok := s.p.Functions[site.To]; !ok {
-		return "対象範囲内にソースがない"
+	if err := s.p.EnsureFunction(site.To); err != nil {
+		return "対象範囲内に利用できるソースがない"
 	}
 	return ""
 }
@@ -308,7 +316,13 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	b.WriteString(uiPaint(displaySlice(" HodoCode  "+s.location, 0, codeWidth), "1;38;5;252;48;5;237", emphasis))
 	b.WriteString(uiPaint(" │ ", "38;5;240;48;5;237", emphasis))
 	b.WriteString(uiPaint(displaySlice(" "+s.paneTitle(), 0, noteWidth), "1;38;5;110;48;5;237", emphasis))
-	notes := s.paneLines(noteWidth-2, body)
+	var notes []string
+	var noteSyntax [][]syntaxHighlight
+	if s.agent == nil || !s.agent.visible {
+		notes, noteSyntax = s.localExplanation(noteWidth-2, body)
+	} else {
+		notes = s.paneLines(noteWidth-2, body)
+	}
 	s.explanationTop = min(s.explanationTop, max(0, len(notes)-body))
 	for i := 0; i < body; i++ {
 		fmt.Fprintf(&b, "\x1b[%d;1H", i+2)
@@ -322,7 +336,11 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		if index := s.explanationTop + i; index < len(notes) {
 			note = notes[index]
 		}
-		b.WriteString(" " + paneTextLine(note, noteWidth-2, emphasis) + " ")
+		rendered := paneTextLine(note, noteWidth-2, emphasis)
+		if index := s.explanationTop + i; emphasis && index < len(noteSyntax) && len(noteSyntax[index]) > 0 {
+			rendered = styledSlice(note, 0, noteWidth-2, noteSyntax[index])
+		}
+		b.WriteString(" " + rendered + " ")
 	}
 	status := "呼び出し箇所なし"
 	if len(s.sites) > 0 {

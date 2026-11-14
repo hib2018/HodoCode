@@ -155,7 +155,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 func functionIDs(p *analyze.Project) []string {
 	ids := make([]string, 0, len(p.Functions))
 	for id := range p.Functions {
-		ids = append(ids, id)
+		if p.LocalFunction(id) {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	return ids
@@ -196,6 +198,9 @@ func (s *flow) expand(id string) error {
 	if s.expanded[id] {
 		return nil
 	}
+	if err := s.p.EnsureFunction(id); err != nil {
+		return err
+	}
 	sites, err := s.p.CallSites(id)
 	if err != nil {
 		return err
@@ -222,7 +227,7 @@ func (s *flow) expand(id string) error {
 	s.expanded[id] = true
 	for _, e := range edges {
 		if !e.Unknown {
-			if _, ok := s.p.Functions[e.To]; ok {
+			if err := s.p.EnsureFunction(e.To); err == nil {
 				s.nodes[e.To] = true
 			}
 		}

@@ -91,8 +91,8 @@ func Unreachable() {}
 	}
 	for _, text := range []string{
 		"├─ 1: A\n├─ 2: Z\n",
-		"外部ソース: 1件、呼び出し先不明: 1件",
-		"├─ strings.TrimSpace（外部ソース・選択不可）",
+		"外部ソース: 0件、呼び出し先不明: 1件",
+		"├─ 3: strings.TrimSpace\n",
 		"└─ unknown: dynamic（呼び出し先不明・選択不可）",
 	} {
 		if !strings.Contains(out.String(), text) {

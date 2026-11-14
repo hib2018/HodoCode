@@ -301,7 +301,7 @@ func main() {
 			t.Fatalf("name-only highlight %d = %q, want %q", i, got, name)
 		}
 		style := "\x1b[97;44m\x1b[1m"
-		if i >= 8 {
+		if name == "missing" {
 			style = "\x1b[97;44m\x1b[1m\x1b[4m"
 		}
 		line := s.codeLine(h.row, 160, true)
@@ -353,10 +353,11 @@ func main() {
 
 func TestFullScreenUnavailableCalls(t *testing.T) {
 	for _, tc := range []struct{ name, call, reason string }{
-		{"helper.Work", "TrimSpace", "対象範囲内にソースがない"},
+		{"helper.Work", "TrimSpace", "呼び出し先を静的に特定できない"},
 		{"Unchecked", "missingSymbol", "呼び出し先を静的に特定できない"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			fakeScreenSDK(t, nil) // Missing SDK source must keep Enter unavailable.
 			s := testScreen(t, tc.name)
 			if len(s.sites) != 1 || s.sites[0].Name != tc.call {
 				t.Fatalf("unavailable call must be selectable: %+v", s.sites)

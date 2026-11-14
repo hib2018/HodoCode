@@ -39,6 +39,7 @@ type screen struct {
 	sourceOffsets []int
 	agent         *agentPane
 	tree          *callTree
+	search        codeSearch
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -69,6 +70,7 @@ func newScreen(p *analyze.Project, name string, expansions []string) (*screen, e
 }
 
 func (s *screen) refresh() error {
+	s.search = codeSearch{}
 	s.sites = s.flow.sites[s.current]
 	s.selected = max(0, min(s.selected, len(s.sites)-1))
 	source, err := s.p.Source(s.current)
@@ -151,6 +153,21 @@ func (s *screen) follow(height, width int) {
 }
 
 func (s *screen) key(key string, height, codeWidth int) (bool, error) {
+	if s.search.input != nil || s.search.query != "" {
+		switch {
+		case key == "\x1b":
+			s.search = codeSearch{}
+		case s.search.input != nil:
+			// Text input is consumed as bytes before navigation decoding.
+		case key == "/":
+			s.search.input = &agentInput{}
+		case key == "\x0e":
+			s.moveSearch(1, height, codeWidth)
+		case key == "\x10":
+			s.moveSearch(-1, height, codeWidth)
+		}
+		return false, nil
+	}
 	if a := s.agent; a != nil && a.visible {
 		id, top := s.current, s.explanationTop
 		defer func() {
@@ -166,6 +183,12 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		return s.treeKey(key, height, codeWidth)
 	}
 	switch key {
+	case "/":
+		s.search.input = &agentInput{}
+	case "\x0e":
+		s.moveSearch(1, height, codeWidth)
+	case "\x10":
+		s.moveSearch(-1, height, codeWidth)
 	case "t":
 		return false, s.openTree()
 	case "q", "\x03", "\x04":
@@ -284,6 +307,18 @@ func (s *screen) codeLine(row, width int, emphasis bool) string {
 		}
 		spans = append(spans, syntaxHighlight{start: h.start, end: h.end, style: style})
 	}
+	// Search overrides call markers and syntax; the active match has its own color.
+	for _, m := range s.search.matches {
+		if m.row == row {
+			spans = append(spans, syntaxHighlight{start: m.start, end: m.end, style: "\x1b[30;43m"})
+		}
+	}
+	if i := s.search.selected; len(s.search.matches) > 0 && i >= 0 {
+		m := s.search.matches[i]
+		if m.row == row {
+			spans = append(spans, syntaxHighlight{start: m.start, end: m.end, style: "\x1b[1;30;46m"})
+		}
+	}
 	return styledSlice(line, s.horizontal, width, spans)
 }
 
@@ -357,9 +392,22 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	if s.agent != nil && s.agent.input != nil {
 		mode = " INPUT   "
 	}
+	if s.search.query != "" || s.search.input != nil {
+		status = s.searchStatus()
+		mode = " SEARCH  "
+	}
 	progress := fmt.Sprintf(" %d%% · 解説 %d/%d ", (s.cursorRow+1)*100/max(1, len(s.code)), s.explanationTop+1, max(1, len(notes)-body+1))
+	help := screenHelp(width)
+	if s.search.query != "" {
+		help = " ^N/P:次/前  /:再検索  Esc:検索終了"
+	}
+	if s.search.input != nil {
+		status = s.searchPrompt(width - displayWidth(mode) - 1)
+		progress = ""
+		help = " Enter:検索  Esc:取消  Ctrl+U:消去"
+	}
 	writeRow(height-1, uiBar(mode+status, progress, width), "38;5;252;48;5;237")
-	writeRow(height, screenHelp(width), "38;5;245")
+	writeRow(height, help, "38;5;245")
 	return b.String() + s.renderTree(width, height, emphasis)
 }
 
@@ -512,6 +560,10 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			if width >= 41 && height >= 8 && (s.tree == nil || !s.tree.visible) {
 				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", s.cursorRow-s.top+2, s.cursorCell()-s.horizontal+1)
 			}
+			if s.search.input != nil && width >= 41 && height >= 8 {
+				column := 10 + min(displayWidth("/"+s.search.input.text), width-10)
+				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", height-1, column)
+			}
 			if overlay := s.renderAgentInput(width, height, bold); overlay != "" {
 				frame += "\x1b[?25l" + overlay
 			}
@@ -528,14 +580,25 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			return err
 		}
 		if !ok {
+			if decoder.escape == "\x1b" && s.search.query != "" {
+				s.search = codeSearch{}
+				dirty = true
+			}
 			if decoder.escape == "\x1b" && s.tree != nil && s.tree.visible {
 				s.tree.visible = false
 				dirty = true
 			}
 			decoder.escape = ""
+			if s.searchInputIdle() {
+				dirty = true
+			}
 			if s.agentInputIdle() {
 				dirty = true
 			}
+			continue
+		}
+		if s.searchInputByte(b, max(1, height-3), max(1, screenCodeWidth(width))) {
+			dirty = true
 			continue
 		}
 		if s.agentInputByte(ctx, b) {
@@ -547,12 +610,12 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			continue
 		}
 		if width < 41 || height < 8 {
-			if key == "q" || key == "\x03" || key == "\x04" {
+			if s.search.query == "" && (key == "q" || key == "\x03" || key == "\x04") {
 				return nil
 			}
 			continue
 		}
-		if (s.tree == nil || !s.tree.visible) && s.agentKey(ctx, key) {
+		if s.search.query == "" && s.search.input == nil && (s.tree == nil || !s.tree.visible) && s.agentKey(ctx, key) {
 			dirty = true
 			continue
 		}

@@ -65,7 +65,7 @@ func TestScreenContextualChrome(t *testing.T) {
 func TestUIBarAndHelp(t *testing.T) {
 	for width := 41; width < 240; width++ {
 		help := screenHelp(width)
-		if displayWidth(help) > width || !strings.Contains(help, "q 終了") || !strings.Contains(help, "E 解説") {
+		if displayWidth(help) > width || !strings.Contains(help, "q 終了") || !strings.Contains(help, "E 解説") || !strings.Contains(help, "v:nvim") || !strings.Contains(help, "r:再読") {
 			t.Fatalf("help at %d: %q", width, help)
 		}
 		bar := uiBar("日本語"+strings.Repeat("x", 300), " 42% · 解説 1/3 ", width)

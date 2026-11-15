@@ -45,6 +45,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	fs.SetOutput(stderr)
 	root := fs.String("root", ".", "repository or Go module root; includes nested modules")
 	var dir, name, purpose *string
+	var nvimServer string
 	var depth *int
 	var send *bool
 	var timeout *time.Duration
@@ -67,6 +68,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		purpose = fs.String("purpose", defaultPurpose, "analysis purpose (sent verbatim; do not include secrets)")
 		fs.Var(&excludes, "exclude", "relative filepath.Match pattern or directory prefix (repeatable; no **)")
 		timeout = fs.Duration("timeout", 2*time.Minute, "total timeout for both fx requests")
+	}
+	if command == "tui" {
+		fs.StringVar(&nvimServer, "nvim-server", "", "explicit Neovim server address (otherwise launch nvim in this terminal)")
 	}
 	if command == "explain" {
 		send = fs.Bool("send", false, "send metadata and sanitized selected snippets to fx after auditing preview")
@@ -106,7 +110,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		}
 		if input, ok := in.(*os.File); ok && os.Getenv("TERM") != "dumb" {
 			if output, ok := out.(*os.File); ok && terminalSupported(input, output) {
-				return fullScreen(ctx, p, *name, expansions, input, output, agentOptions{runner: runner, purpose: *purpose, excludes: excludes, timeout: *timeout})
+				return fullScreen(ctx, p, *name, expansions, input, output, agentOptions{runner: runner, purpose: *purpose, excludes: excludes, timeout: *timeout}, nvimServer)
 			}
 		}
 		return interactive(p, *name, expansions, in, out)

@@ -40,6 +40,8 @@ type screen struct {
 	agent         *agentPane
 	tree          *callTree
 	search        codeSearch
+	nvimServer    string
+	notice        string
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -179,6 +181,7 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 	if s.tree != nil && s.tree.visible {
 		return s.treeKey(key, height, codeWidth)
 	}
+	s.notice = ""
 	switch key {
 	case "/":
 		s.search.input = &agentInput{}
@@ -186,6 +189,12 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		s.moveSearch(1, height, codeWidth)
 	case "\x10":
 		s.moveSearch(-1, height, codeWidth)
+	case "v":
+		return false, errOpenNeovim
+	case "r":
+		if err := s.reload(height, codeWidth); err != nil {
+			s.notice = "再読み込みに失敗しました: " + err.Error()
+		}
 	case "t":
 		return false, s.openTree()
 	case "q", "\x03", "\x04":
@@ -385,6 +394,9 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	if s.callAtCursor() < 0 {
 		status = "カーソル " + s.cursorStatus()
 	}
+	if s.notice != "" {
+		status = s.notice
+	}
 	mode := " NORMAL  "
 	if s.agent != nil && s.agent.input != nil {
 		mode = " INPUT   "
@@ -513,21 +525,55 @@ func (d *keyDecoder) feed(b byte) string {
 	return string(b)
 }
 
-func fullScreen(ctx context.Context, p *analyze.Project, name string, expansions []string, in, out *os.File, options agentOptions) error {
+func fullScreen(ctx context.Context, p *analyze.Project, name string, expansions []string, in, out *os.File, options agentOptions, nvimServer string) error {
 	s, err := newScreen(p, name, expansions)
 	if err != nil {
 		return err
 	}
 	s.agent = newAgentPane(options)
-	_, noColor := os.LookupEnv("NO_COLOR")
-	return withTerminal(in, out, func(read func() (byte, bool, error), size func() (int, int, error)) error {
-		return screenLoop(ctx, s, out, read, size, !noColor)
-	})
-}
-
-func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte, bool, error), size func() (int, int, error), bold bool) error {
+	s.nvimServer = nvimServer
 	defer func() {
 		if s.agent != nil && s.agent.cancel != nil {
+			s.agent.cancel()
+		}
+	}()
+	_, noColor := os.LookupEnv("NO_COLOR")
+	for {
+		err := withTerminal(in, out, func(read func() (byte, bool, error), size func() (int, int, error)) error {
+			return screenLoop(ctx, s, out, read, size, !noColor)
+		})
+		if err != errOpenNeovim {
+			return err
+		}
+		cmd, err := s.neovimCommand(ctx)
+		if err == nil {
+			if s.nvimServer == "" {
+				cmd.Stdin, cmd.Stdout, cmd.Stderr = in, out, out
+				err = cmd.Run()
+			} else {
+				var output []byte
+				output, err = cmd.CombinedOutput()
+				if err != nil {
+					err = fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+				}
+			}
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			s.notice = "Neovimの起動に失敗しました: " + err.Error()
+		} else if s.nvimServer != "" {
+			s.notice = "Neovimへ送信しました。r:再読み込み"
+		} else {
+			s.notice = "Neovimから復帰しました。r:再読み込み"
+		}
+	}
+}
+
+func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte, bool, error), size func() (int, int, error), bold bool) (result error) {
+	defer func() {
+		if result != errOpenNeovim && s.agent != nil && s.agent.cancel != nil {
 			s.agent.cancel()
 		}
 	}()

@@ -1,6 +1,6 @@
 # HodoCode
 
-ローカルのGoリポジトリから、依存関係図・関数呼び出し図・根拠付きの短い解説を生成するCLIと全画面TUIです。リポジトリ内の複数Goモジュールに対応し、外部Go依存はありません。
+ローカルまたはGitHub上のGoリポジトリから、依存関係図・関数呼び出し図・根拠付きの短い解説を生成するCLIと全画面TUIです。リポジトリ内の複数Goモジュールに対応し、外部Go依存はありません。
 
 ## 起動
 
@@ -12,6 +12,25 @@ go build -o hodocode ./cmd/hodocode
 ```
 
 `--root` は解析するリポジトリまたはGoモジュールのディレクトリです（既定はカレントディレクトリ）。その配下の `go.mod` をすべて検出するので、直下に `go.mod` のない複数モジュール構成にも対応します。リポジトリ全体を対象にするには、サブディレクトリではなくリポジトリのルートを指定してください。解析・図示にはネットワークもfxも不要です。出力先を上書きしないよう、リダイレクト先は確認してください。
+
+## GitHubリポジトリの解析
+
+```sh
+./hodocode functions --repo https://github.com/owner/repo --ref main
+./hodocode flow --repo https://github.com/owner/repo --ref v1.0.0 --func main
+./hodocode deps --repo https://github.com/owner/repo --subdir services/api
+./hodocode tui --repo https://github.com/owner/repo
+./hodocode explain --repo https://github.com/owner/repo --func main --purpose '役割を確認'
+```
+
+- `--repo` と `--root` は併用できません。初期対応はGoのみで、解析対象またはそのリポジトリ内の親ディレクトリに `go.mod` が必要です。複数モジュールも解析できます。
+- `--ref` はブランチ・タグ・コミットを指定します（省略時は既定ブランチ）。毎回GitHubでコミットSHAに解決し、結果にSHAを表示します。再現するには表示されたSHAを `--ref` に指定してください。関数一覧・呼び出し図・解説プレビュー・TUIにはSHAと行番号付きのソース固定URLも表示します。
+- `--subdir` は取得したリポジトリ内の解析範囲を限定します。親のGoモジュールは引き継ぎますが、範囲外のソースは索引化しません。リポジトリ外を指すパスは拒否します。取得容量そのものを減らすオプションではありません。
+- GitHub APIとソースアーカイブを利用し、Git・ビルド・リポジトリのスクリプト・Gitフックは実行しません。依存関係の自動ダウンロードも行いません。アーカイブ内のリンクや危険なパスは拒否します。
+- `--fetch-timeout`（既定 `2m`）と `--max-bytes`（既定 `104857600` = 100 MiB）で取得時間と圧縮・展開サイズを制限します。Ctrl-Cで取得を中断でき、失敗した取得の一時データは削除します。
+- 取得済みソースはOSのユーザーキャッシュ配下の `hodocode/repositories` にリポジトリ・SHA単位で保存します。保存先は `--cache-dir PATH`、再取得は `--refresh`、リポジトリ単位の削除は `hodocode cache --repo URL --delete [--cache-dir PATH]` です。キャッシュ利用時もSHA解決の通信は必要です。リモートのTUIからのNeovim編集は無効です。編集する場合はローカルのクローンに `--root` を指定してください。
+- 非公開リポジトリには `--private` を明示し、事前に `gh auth login` で認証してください。既存の `gh` 認証を取得時だけ利用し、認証情報をログやAIへの送信内容に含めません。非公開ソースもキャッシュに保存されるため、不要になったら削除してください。
+- 取得・静的解析だけではAIにコードを送信しません。`explain` の既定はローカルプレビューで、既存の `--exclude` が適用されます。`--send` やTUIの明示的な送信操作でのみ、既存の確認フローに従って送信します。
 
 ## 依存関係図
 

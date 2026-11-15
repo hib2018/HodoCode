@@ -28,20 +28,22 @@ type screen struct {
 	p    *analyze.Project
 	flow *flow
 	screenPosition
-	history       []screenPosition
-	sites         []analyze.CallSite
-	highlights    []callHighlight
-	code          []string
-	syntax        [][]syntaxHighlight
-	location      string
-	explanations  []syntaxExplanation
-	definitions   map[int]analyze.Definition
-	sourceOffsets []int
-	agent         *agentPane
-	tree          *callTree
-	search        codeSearch
-	nvimServer    string
-	notice        string
+	history                     []screenPosition
+	sites                       []analyze.CallSite
+	highlights                  []callHighlight
+	code                        []string
+	syntax                      [][]syntaxHighlight
+	location                    string
+	explanations                []syntaxExplanation
+	definitions                 map[int]analyze.Definition
+	variables                   []variableHighlight
+	variableOffset, variableTop int
+	sourceOffsets               []int
+	agent                       *agentPane
+	tree                        *callTree
+	search                      codeSearch
+	nvimServer                  string
+	notice                      string
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -100,12 +102,24 @@ func (s *screen) refresh() error {
 		return err
 	}
 	s.highlights = make([]callHighlight, len(s.sites))
+	s.variables = nil
+	s.variableOffset, s.variableTop = -1, 0
 	offset := 0
 	for row, raw := range strings.Split(source, "\n") {
 		s.sourceOffsets = append(s.sourceOffsets, offset)
 		prefix := fmt.Sprintf("%d │ ", fn.Line+row)
 		line := prefix + strings.TrimSuffix(raw, "\r")
 		s.code = append(s.code, line)
+		for pos, definition := range s.definitions {
+			column := pos - offset
+			if (definition.VariableID == 0 && !definition.Unresolved) || definition.Length == 0 || column < 0 || column+definition.Length > len(strings.TrimSuffix(raw, "\r")) {
+				continue
+			}
+			s.variables = append(s.variables, variableHighlight{
+				callHighlight: callHighlight{row: row, start: displayWidth(prefix + raw[:column]), end: displayWidth(prefix + raw[:column+definition.Length])},
+				offset:        pos,
+			})
+		}
 		for i, site := range s.sites {
 			if site.Line != fn.Line+row {
 				continue
@@ -185,7 +199,15 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		return s.treeKey(key, height, codeWidth)
 	}
 	s.notice = ""
+	s.syncVariable()
+	defer s.syncVariable()
 	switch key {
+	case "{":
+		s.variableTop = max(0, s.variableTop-1)
+	case "}":
+		if s.variableOffset >= 0 {
+			s.variableTop++
+		}
 	case "/":
 		s.search.input = &agentInput{}
 	case "\x0e":
@@ -316,7 +338,8 @@ func (s *screen) codeLine(row, width int, emphasis bool) string {
 		}
 		spans = append(spans, syntaxHighlight{start: h.start, end: h.end, style: style})
 	}
-	// Search overrides call markers and syntax; the active match has its own color.
+	spans = append(spans, s.variableSpans(row)...)
+	// Search overrides variable/call markers and syntax; the active match has its own color.
 	for _, m := range s.search.matches {
 		if m.row == row {
 			spans = append(spans, syntaxHighlight{start: m.start, end: m.end, style: "\x1b[30;43m"})
@@ -420,7 +443,7 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	}
 	writeRow(height-1, uiBar(mode+status, progress, width), "38;5;252;48;5;237")
 	writeRow(height, help, "38;5;245")
-	return b.String() + s.renderTree(width, height, emphasis)
+	return b.String() + s.renderVariable(width, height, emphasis) + s.renderTree(width, height, emphasis)
 }
 
 // shortcut: cell widths cover CJK and combining marks, not every emoji grapheme;

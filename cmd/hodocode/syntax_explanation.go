@@ -145,6 +145,9 @@ func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighli
 			offset += len(string(raw[:min(selected.column, len(raw))]))
 		}
 		if definition, ok := s.definitions[offset]; ok {
+			if definition.PopupOnly {
+				definition.Snippets = nil
+			}
 			var prefix []string
 			for _, snippet := range definition.Snippets {
 				prefix = append(prefix, snippet.File, "")

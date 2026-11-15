@@ -51,6 +51,8 @@ type CallSite struct {
 // Reload after build, module or workspace configuration changes.
 type Project struct {
 	Root string
+	// Remote snapshot metadata; RepositorySubdir is slash-separated relative to the repository root.
+	RepositoryURL, CommitSHA, RepositorySubdir string
 	// Functions starts with root declarations only. EnsureFunction may add SDK
 	// functions for local navigation; send/explain code must filter LocalFunction.
 	Functions map[string]Function
@@ -73,6 +75,10 @@ type Project struct {
 // File paths and import sources are slash-separated, relative to Root; method IDs
 // are import/path.Receiver.Method (also for *Receiver).
 func Load(root string) (*Project, error) {
+	return load(root, "")
+}
+
+func load(root, moduleBoundary string) (*Project, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("root: %w", err)
@@ -84,6 +90,26 @@ func Load(root string) (*Project, error) {
 	p := &Project{Root: root, fset: token.NewFileSet(), Functions: map[string]Function{}, packages: map[string][]*ast.File{}, declarations: map[string]*ast.FuncDecl{}, owners: map[string]string{}, sources: map[string][]byte{}}
 	directories := map[string]sourceModule{}
 	modules := map[string]string{}
+	if moduleBoundary != "" && root != moduleBoundary {
+		rootModule, err := directoryModule(root)
+		if err != nil {
+			return nil, err
+		}
+		for dir := filepath.Dir(root); rootModule.path == ""; dir = filepath.Dir(dir) {
+			module, err := directoryModule(dir)
+			if err != nil {
+				return nil, err
+			}
+			if module.path != "" {
+				directories[filepath.Dir(root)] = module
+				modules[module.path] = dir
+				break
+			}
+			if dir == moduleBoundary {
+				break
+			}
+		}
+	}
 	packageDirs := map[string]string{}
 	p.packageDirs = packageDirs
 	p.local = map[string]bool{}

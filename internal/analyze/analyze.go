@@ -212,6 +212,17 @@ func (p *Project) Source(id string) (string, error) {
 	return string(source[start:end]), nil
 }
 
+// SourcePosition returns the physical start position of an indexed declaration,
+// with an absolute filename and a 1-based byte column, ignoring //line directives.
+// SDK declarations must first be registered with EnsureFunction, as with Source.
+func (p *Project) SourcePosition(id string) (token.Position, error) {
+	fn, ok := p.declarations[id]
+	if !ok {
+		return token.Position{}, fmt.Errorf("function %q not found", id)
+	}
+	return p.fset.PositionFor(fn.Pos(), false), nil
+}
+
 func receiverName(expr ast.Expr) string {
 	switch x := expr.(type) {
 	case *ast.Ident:

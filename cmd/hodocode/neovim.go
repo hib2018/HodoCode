@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/hib2018/HodoCode/internal/analyze"
@@ -14,6 +15,9 @@ var errOpenNeovim = errors.New("open Neovim outside terminal mode")
 
 // Neovim's cursor() takes a byte column, not a screen-cell or rune column.
 func (s *screen) neovimCommand(ctx context.Context) (*exec.Cmd, error) {
+	if s.p.RepositoryURL != "" {
+		return nil, fmt.Errorf("remote repository snapshots are read-only; use --root on a local clone to edit")
+	}
 	source, err := s.p.SourcePosition(s.current)
 	if err != nil {
 		return nil, err
@@ -36,10 +40,23 @@ func (s *screen) neovimCommand(ctx context.Context) (*exec.Cmd, error) {
 }
 
 func (s *screen) reload(height, width int) error {
-	p, err := analyze.Load(s.p.Root)
+	var p *analyze.Project
+	var err error
+	if s.p.RepositorySubdir != "" {
+		root := s.p.Root
+		for range strings.Split(s.p.RepositorySubdir, "/") {
+			root = filepath.Dir(root)
+		}
+		p, err = analyze.LoadSubdir(root, s.p.RepositorySubdir)
+	} else {
+		p, err = analyze.Load(s.p.Root)
+	}
 	if err != nil {
 		return err
 	}
+	p.RepositoryURL = s.p.RepositoryURL
+	p.CommitSHA = s.p.CommitSHA
+	p.RepositorySubdir = s.p.RepositorySubdir
 	current := s.current
 	if err := p.EnsureFunction(current); err != nil {
 		current = ""

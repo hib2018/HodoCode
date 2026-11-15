@@ -8,12 +8,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/hib2018/HodoCode/internal/analyze"
 	"github.com/hib2018/HodoCode/internal/explain"
+	"github.com/hib2018/HodoCode/internal/repository"
 )
 
 func main() {
@@ -32,18 +34,30 @@ func (s *list) Set(v string) error { *s = append(*s, v); return nil }
 
 func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer, runner explain.Runner) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(out, "Usage: hodocode <deps|functions|flow|tui|explain> [flags]\nCommon: --root PATH (repository or Go module root; includes nested modules)\ndeps: --dir . --depth -1 (source directory depth)\nflow/tui: --func NAME [--expand NAME ...]\nexplain: --func NAME --purpose TEXT [--exclude PATTERN ...] [--send] [--timeout 2m]\nexplain defaults to a local preview; --send invokes fx twice. Run a command with --help for flags.")
+		_, err := fmt.Fprintln(out, "Usage: hodocode <deps|functions|flow|tui|explain|cache> [flags]\nCommon: --root PATH (local) or --repo https://github.com/owner/repo [--ref REF] [--subdir PATH] [--private]\nRemote: --fetch-timeout 2m --max-bytes 104857600 --cache-dir PATH --refresh\ncache: --repo URL --delete [--cache-dir PATH]\nRemote acquisition and static analysis never send code to AI.\ndeps: --dir . --depth -1 (source directory depth)\nflow/tui: --func NAME [--expand NAME ...]\nexplain: --func NAME --purpose TEXT [--exclude PATTERN ...] [--send] [--timeout 2m]\nexplain defaults to a local preview; --send invokes fx twice. Run a command with --help for flags.")
 		return err
 	}
 	command := args[0]
 	switch command {
-	case "deps", "functions", "flow", "tui", "explain":
+	case "deps", "functions", "flow", "tui", "explain", "cache":
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	root := fs.String("root", ".", "repository or Go module root; includes nested modules")
+	repo := fs.String("repo", "", "GitHub repository HTTPS URL (static analysis does not send code to AI)")
+	ref := fs.String("ref", "", "branch, tag or commit (default: repository default branch)")
+	subdir := fs.String("subdir", ".", "analysis directory inside the fetched repository")
+	private := fs.Bool("private", false, "use existing gh authentication for private repositories")
+	fetchTimeout := fs.Duration("fetch-timeout", 2*time.Minute, "total repository acquisition timeout")
+	maxBytes := fs.Int64("max-bytes", 100<<20, "maximum compressed and expanded repository bytes")
+	cacheDir := fs.String("cache-dir", "", "repository cache directory (default: OS user cache/hodocode/repositories)")
+	refresh := fs.Bool("refresh", false, "download the selected commit again")
+	var deleteCache bool
+	if command == "cache" {
+		fs.BoolVar(&deleteCache, "delete", false, "delete all cached commits for --repo without fetching")
+	}
 	var dir, name, purpose *string
 	var nvimServer string
 	var depth *int
@@ -84,15 +98,69 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	p, err := analyze.Load(*root)
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	if *repo != "" && explicit["root"] {
+		return fmt.Errorf("--repo and --root are mutually exclusive")
+	}
+	if command == "cache" {
+		for flag := range explicit {
+			if flag != "repo" && flag != "delete" && flag != "cache-dir" {
+				return fmt.Errorf("--%s is not supported by cache", flag)
+			}
+		}
+		if *repo == "" || !deleteCache {
+			return fmt.Errorf("cache requires --repo URL --delete")
+		}
+		return repository.RemoveCache(*cacheDir, *repo)
+	}
+	if *repo == "" {
+		for _, flag := range []string{"ref", "subdir", "private", "fetch-timeout", "max-bytes", "cache-dir", "refresh"} {
+			if explicit[flag] {
+				return fmt.Errorf("--%s requires --repo", flag)
+			}
+		}
+	}
+	var p *analyze.Project
+	var err error
+	if *repo == "" {
+		p, err = analyze.Load(*root)
+	} else {
+		if *fetchTimeout <= 0 || *maxBytes <= 0 {
+			return fmt.Errorf("--fetch-timeout and --max-bytes must be positive")
+		}
+		if filepath.IsAbs(*subdir) || *subdir == ".." || strings.HasPrefix(filepath.Clean(*subdir), ".."+string(filepath.Separator)) {
+			return fmt.Errorf("--subdir must stay inside the repository")
+		}
+		snapshot, fetchErr := repository.Fetch(ctx, repository.Options{URL: *repo, Ref: *ref, CacheDir: *cacheDir, Timeout: *fetchTimeout, MaxBytes: *maxBytes, Refresh: *refresh, Private: *private})
+		if fetchErr != nil {
+			return fetchErr
+		}
+		p, err = analyze.LoadSubdir(snapshot.Root, *subdir)
+		if err != nil && strings.Contains(err.Error(), "no go.mod found") {
+			return fmt.Errorf("GitHub analysis currently supports Go repositories only: select a directory containing go.mod (or beneath a repository module): %w", err)
+		}
+		if err == nil {
+			p.RepositoryURL, p.CommitSHA = snapshot.URL, snapshot.SHA
+		}
+	}
 	if err != nil {
 		return err
+	}
+	if p.RepositoryURL != "" {
+		prefix := "#"
+		if command == "deps" || command == "flow" {
+			prefix = "%%"
+		}
+		if _, err := fmt.Fprintf(out, "%s %s @ %s\n", prefix, p.RepositoryURL, p.CommitSHA); err != nil {
+			return err
+		}
 	}
 	switch command {
 	case "functions":
 		for _, id := range functionIDs(p) {
 			f := p.Functions[id]
-			if _, err := fmt.Fprintf(out, "%s\t%s:%d-%d\n", id, f.File, f.Line, f.End); err != nil {
+			if _, err := fmt.Fprintf(out, "%s\t%s:%d-%d%s\n", id, f.File, f.Line, f.End, sourceSuffix(p, id)); err != nil {
 				return err
 			}
 		}
@@ -133,6 +201,11 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		if err != nil {
 			return err
 		}
+		if u := p.SourceURL(id); u != "" {
+			if _, err := fmt.Fprintln(out, "# "+u); err != nil {
+				return err
+			}
+		}
 		req, err := explain.Prepare(p, id, *purpose, edges, excludes)
 		if err != nil {
 			return err
@@ -154,6 +227,13 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		return err
 	}
 	return nil
+}
+
+func sourceSuffix(p *analyze.Project, id string) string {
+	if u := p.SourceURL(id); u != "" {
+		return "\t" + u
+	}
+	return ""
 }
 
 func functionIDs(p *analyze.Project) []string {
@@ -243,7 +323,14 @@ func (s *flow) diagram() string {
 	for id := range s.nodes {
 		nodes = append(nodes, id)
 	}
-	return analyze.MermaidNodes(s.edges, nodes)
+	diagram := analyze.MermaidNodes(s.edges, nodes)
+	sort.Strings(nodes)
+	for _, id := range nodes {
+		if u := s.p.SourceURL(id); u != "" {
+			diagram += "%% " + id + " " + u + "\n"
+		}
+	}
+	return diagram
 }
 func choose(scan *bufio.Scanner, out io.Writer, ids []string, back bool, labels map[string]string, details bool) (string, error) {
 	prompt := "番号で選択、qで終了 > "
@@ -444,6 +531,11 @@ func interactive(p *analyze.Project, name string, expansions []string, in io.Rea
 			return err
 		}
 		fn := p.Functions[current]
+		if u := p.SourceURL(current); u != "" {
+			if _, err = fmt.Fprintln(out, u); err != nil {
+				return err
+			}
+		}
 		if _, err = fmt.Fprintf(out, "\n%s:%d-%d\n%s\n%s\n%s\n", fn.File, fn.Line, fn.End, strings.Repeat("─", 60), code, strings.Repeat("─", 60)); err != nil {
 			return err
 		}

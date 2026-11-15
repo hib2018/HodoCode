@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/hib2018/HodoCode/internal/analyze"
 )
 
 func TestNeovimCommand(t *testing.T) {
@@ -148,4 +150,62 @@ func TestNeovimFirstLineColumn(t *testing.T) {
 	if cmd.Args[1] != "+call cursor(2,14)" {
 		t.Fatalf("first-line physical column: %q", cmd.Args)
 	}
+}
+
+func TestRemoteSnapshotNeovimReadOnly(t *testing.T) {
+	p := screenProject(t, map[string]string{"main.go": "package main\nfunc main() {}\n"})
+	p.RepositoryURL = "https://github.com/owner/repo"
+	p.CommitSHA = "abcdef123"
+	s, err := newScreen(p, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range []string{"", "/tmp/nvim-server"} {
+		s.nvimServer = server
+		cmd, err := s.neovimCommand(context.Background())
+		if cmd != nil || err == nil || !strings.Contains(err.Error(), "read-only") || !strings.Contains(err.Error(), "--root") {
+			t.Fatalf("remote editor command = %v, %v", cmd, err)
+		}
+	}
+}
+
+func TestRemoteMetadataReloadAndLocation(t *testing.T) {
+	root := t.TempDir()
+	for name, text := range map[string]string{
+		"go.mod":           "module example.com/root\n",
+		"bad.go":           "invalid unselected source",
+		"selected/main.go": "package main\nfunc main() {}\n",
+	} {
+		filename := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(filename), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filename, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := analyze.LoadSubdir(root, "selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.RepositoryURL, p.CommitSHA = "https://github.com/owner/repo", "abcdef123"
+	s, err := newScreen(p, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantURL := "https://github.com/owner/repo/blob/abcdef123/selected/main.go#L2-L2"
+	check := func() {
+		t.Helper()
+		if !strings.Contains(s.location, "main.go:2-2") || !strings.Contains(s.location, "SHA abcdef123") || !strings.Contains(s.location, wantURL) {
+			t.Fatalf("location = %s", s.location)
+		}
+		if s.p.RepositoryURL != p.RepositoryURL || s.p.CommitSHA != p.CommitSHA || s.p.RepositorySubdir != "selected" {
+			t.Fatalf("remote metadata lost: %+v", s.p)
+		}
+	}
+	check()
+	if err := s.reload(20, 100); err != nil {
+		t.Fatal(err)
+	}
+	check()
 }

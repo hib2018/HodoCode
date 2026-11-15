@@ -81,6 +81,9 @@ func (s *screen) refresh() error {
 	}
 	fn := s.p.Functions[s.current]
 	s.location = fmt.Sprintf("%s:%d-%d", fn.File, fn.Line, fn.End)
+	if sourceURL := s.p.SourceURL(s.current); sourceURL != "" {
+		s.location += fmt.Sprintf(" | SHA %s | %s", s.p.CommitSHA, sourceURL)
+	}
 	s.code = nil
 	s.sourceOffsets = nil
 	s.syntax = sourceHighlights(source, fn.Line)

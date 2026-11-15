@@ -11,8 +11,12 @@ import (
 // Definition contains static declaration sources, never inferred runtime values.
 // Reason explains unavailable definitions in Japanese; partial results may have both.
 type Definition struct {
-	Snippets []DefinitionSource
-	Reason   string
+	Snippets   []DefinitionSource
+	Reason     string
+	VariableID int  // Declaration position within the snapshot; zero for nonvariables or unresolved identifiers.
+	Length     int  // Identifier length in bytes.
+	Unresolved bool // No object was resolved for this identifier.
+	PopupOnly  bool // Snippets newly exposed for popup; existing definition pane keeps generic help.
 }
 
 // DefinitionSource preserves indexed bytes and a physical, 1-based line number.
@@ -25,10 +29,11 @@ type DefinitionSource struct {
 	Source string
 }
 
-// Definitions looks up SDK objects, or root/dependency struct type names and
-// slice variables, including the selected function's signature and closures.
+// Definitions looks up SDK objects, root/dependency struct type names, and all
+// variables, including the selected function's signature and closures.
 // Keys are identifier byte offsets from Source(id). Builtins and unavailable
 // sources have a Reason; resolved unrelated root/dependency identifiers are omitted.
+// Variable declarations precede any existing slice-element type help.
 // All snippets preserve parsed snapshot bytes and source object positions.
 func (p *Project) Definitions(id string) (map[int]Definition, error) {
 	fn, ok := p.declarations[id]
@@ -69,7 +74,7 @@ func (p *Project) Definitions(id string) (map[int]Definition, error) {
 		if obj == nil {
 			obj = info.Defs[ident]
 		}
-		var definition Definition
+		definition := Definition{Length: len(ident.Name)}
 		appendObject := func(obj types.Object) {
 			_, builtin := obj.(*types.Builtin)
 			if obj.Pkg() == nil || builtin {
@@ -107,8 +112,8 @@ func (p *Project) Definitions(id string) (map[int]Definition, error) {
 				}
 			}
 		}
-		// SDK identifiers expose every object kind, not just the local/external
-		// struct and slice subset. Builtins are explained rather than invented.
+		// SDK identifiers expose every object kind. Builtins are explained
+		// rather than invented.
 		if obj != nil {
 			_, packageName := obj.(*types.PkgName)
 			if obj.Pkg() != nil && !packageName {
@@ -121,6 +126,7 @@ func (p *Project) Definitions(id string) (map[int]Definition, error) {
 		}
 		switch obj := obj.(type) {
 		case nil:
+			definition.Unresolved = true
 			definition.Reason = "識別子の定義または型を解決できません"
 		case *types.TypeName:
 			if _, ok := obj.Type().Underlying().(*types.Struct); ok {
@@ -130,8 +136,11 @@ func (p *Project) Definitions(id string) (map[int]Definition, error) {
 				definition.Reason = "識別子の型を解決できません"
 			}
 		case *types.Var:
-			if slice, ok := obj.Type().Underlying().(*types.Slice); ok {
-				appendObject(obj)
+			definition.VariableID = int(obj.Pos())
+			slice, isSlice := obj.Type().Underlying().(*types.Slice)
+			definition.PopupOnly = len(definition.Snippets) == 0 && !isSlice
+			appendObject(obj)
+			if isSlice {
 				appendStruct(slice.Elem())
 			} else if obj.Type().Underlying() == types.Typ[types.Invalid] {
 				definition.Reason = "識別子の型を解決できません"

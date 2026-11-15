@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"go/ast"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -92,11 +93,7 @@ func TestDefinitionsScopesAndSources(t *testing.T) {
 			t.Errorf("unexpected offset/reason: %d %+v", offset, definition)
 		}
 	}
-	for _, marker := range []string{"closure(nil)"} {
-		if _, exists := got[strings.Index(entry, marker)]; exists {
-			t.Errorf("unrelated identifier included: %q", marker)
-		}
-	}
+	check("closure(nil)", "closure", DefinitionSource{"entry.go", 20, "closure := func(local []m.Item) {\n  _ = local\n  captured := param\n  _ = captured\n }"})
 	after, _ := p.CallSites(id)
 	if !reflect.DeepEqual(before, after) {
 		t.Fatalf("Definitions changed call analysis: before %+v, after %+v", before, after)
@@ -221,6 +218,178 @@ func TestDefinitionsRangeAndEmbeddedSlice(t *testing.T) {
 		want := []DefinitionSource{tc.want, {"types.go", 2, "type Item struct { Name string }"}}
 		if got.Reason != "" || !reflect.DeepEqual(got.Snippets, want) {
 			t.Errorf("%s: got %+v, want %+v", tc.marker, got, want)
+		}
+	}
+}
+
+func TestDefinitionsAllVariablesIdentityAndSnapshot(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/defs\n\ngo 1.23\n")
+	entry := `func (receiver *Thing) Entry(param int) (result string) {
+ var scalar int
+ var text = "snapshot"
+ var pointer *Thing
+ var record Thing
+ var array [2]int
+ var mapping map[string]int
+ var channel chan int
+ var dynamic any
+ var broken Missing
+ 数字 := 1
+ scalar, extra := scalar, true
+ closure := func(inner int) int { return inner + param + scalar }
+ for index, value := range array {
+  _, _ = index, value
+ }
+ {
+  scalar := 2
+  _ = scalar
+ }
+ _, _, _, _, _, _, _, _, _, _, _, _, _ = receiver, result, scalar, text, pointer, record, mapping, channel, dynamic, broken, 数字, extra, closure
+ _ = record.Field
+ absent()
+ println(param)
+ return
+}`
+	write(t, root, "entry.go", "package defs\ntype Thing struct { Field int }\n"+entry)
+	p, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "example.com/defs.Thing.Entry"
+	fn := p.declarations[id]
+	if fn == nil {
+		t.Fatalf("missing method %s", id)
+	}
+	// Definitions, positions, and source bytes must not follow disk edits.
+	write(t, root, "entry.go", "package changed\n")
+	got, err := p.Definitions(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[int]string{}
+	for _, tc := range []struct {
+		name, declaration, reference, source string
+	}{
+		{"receiver", "receiver *Thing", "receiver, result", "receiver *Thing"},
+		{"param", "param int", "param + scalar", "param int"},
+		{"result", "result string", "result, scalar", "result string"},
+		{"scalar", "scalar int", "scalar, text", "var scalar int"},
+		{"text", "text =", "text, pointer", `var text = "snapshot"`},
+		{"pointer", "pointer *Thing", "pointer, record", "var pointer *Thing"},
+		{"record", "record Thing", "record.Field", "var record Thing"},
+		{"array", "array [2]int", "array {", "var array [2]int"},
+		{"mapping", "mapping map", "mapping, channel", "var mapping map[string]int"},
+		{"channel", "channel chan", "channel, dynamic", "var channel chan int"},
+		{"dynamic", "dynamic any", "dynamic, broken", "var dynamic any"},
+		{"broken", "broken Missing", "broken, 数字", "var broken Missing"},
+		{"数字", "数字 :=", "数字, extra", "数字 := 1"},
+		{"extra", "extra :=", "extra, closure", "scalar, extra := scalar, true"},
+		{"closure", "closure :=", "closure\n", "closure := func(inner int) int { return inner + param + scalar }"},
+		{"inner", "inner int", "inner +", "inner int"},
+		{"index", "index, value :=", "index, value\n", "for index, value := range array"},
+		{"value", "value := range", "value\n", "for index, value := range array"},
+		{"scalar", "scalar := 2", "scalar\n }", "scalar := 2"},
+	} {
+		declOffset := strings.Index(entry, tc.declaration)
+		refOffset := strings.Index(entry, tc.reference)
+		if declOffset < 0 || refOffset < 0 {
+			t.Fatalf("bad markers: %+v", tc)
+		}
+		wantID := int(fn.Pos()) + declOffset
+		if previous, exists := seen[wantID]; exists {
+			t.Errorf("declarations %q and %q share ID %d", previous, tc.declaration, wantID)
+		}
+		seen[wantID] = tc.declaration
+		for _, offset := range []int{declOffset, refOffset} {
+			definition, exists := got[offset]
+			if !exists || definition.VariableID != wantID || definition.Length != len(tc.name) || definition.Unresolved || !definition.PopupOnly || len(definition.Snippets) != 1 || definition.Snippets[0].Source != tc.source {
+				t.Errorf("%q at %d: got %+v; want ID %d, length %d, source %q", tc.name, offset, definition, wantID, len(tc.name), tc.source)
+			}
+			if (definition.Reason != "") != (tc.name == "broken") {
+				t.Errorf("%q: unexpected reason %q", tc.name, definition.Reason)
+			}
+		}
+	}
+	// Redeclaration reuses the outer variable, including inside a closure.
+	outerID := got[strings.Index(entry, "scalar int")].VariableID
+	for _, marker := range []string{"scalar, extra :=", "scalar, true", "scalar }"} {
+		if definition := got[strings.Index(entry, marker)]; definition.VariableID != outerID {
+			t.Errorf("%q changed variable identity: %+v", marker, definition)
+		}
+	}
+	field := got[strings.Index(entry, "Field")]
+	if field.VariableID == 0 || len(field.Snippets) != 1 || field.Snippets[0].Source != "Field int" {
+		t.Errorf("field variable: %+v", field)
+	}
+	for _, tc := range []struct {
+		marker     string
+		unresolved bool
+	}{
+		{"absent()", true},
+		{"Missing", true},
+		{"println(", false},
+		{"Thing", false},
+	} {
+		definition, exists := got[strings.Index(entry, tc.marker)]
+		if !exists || definition.VariableID != 0 || definition.Unresolved != tc.unresolved {
+			t.Errorf("%q: %+v (exists %v)", tc.marker, definition, exists)
+		}
+	}
+	ast.Inspect(fn, func(node ast.Node) bool {
+		if ident, ok := node.(*ast.Ident); ok {
+			if definition, exists := got[int(ident.Pos()-fn.Pos())]; exists && definition.Length != len(ident.Name) {
+				t.Errorf("%s: length %d, want %d", ident.Name, definition.Length, len(ident.Name))
+			}
+		}
+		return true
+	})
+	again, err := p.Definitions(id)
+	if err != nil || !reflect.DeepEqual(got, again) {
+		t.Fatalf("snapshot lookup changed: %+v, %v", again, err)
+	}
+}
+
+func TestDefinitionsPopupOnlyPreservesLegacyHelp(t *testing.T) {
+	fakeSDK(t, "time", "package time\nvar Scalar int\nvar Values []int\n")
+	root := t.TempDir()
+	write(t, root, "go.mod", "module example.com/defs\n")
+	entry := `func Entry(scalar int, values []int, named Values) {
+ var invalid Missing
+ var invalidSlice []Missing
+ _, _, _, _, _, _, _ = scalar, values, named, invalid, invalidSlice, time.Scalar, time.Values
+ absent()
+ println(scalar)
+}`
+	write(t, root, "entry.go", "package defs\nimport \"time\"\ntype Values []int\n"+entry)
+	p, err := Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Definitions("example.com/defs.Entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		marker               string
+		popupOnly, hasReason bool
+	}{
+		{"scalar, values", true, false},
+		{"values, named", false, false},
+		{"named, invalid", false, false},
+		{"invalid, invalidSlice", true, true},
+		{"invalidSlice, time", false, true},
+		{"Scalar, time", false, false},
+		{"Values\n", false, false},
+	} {
+		definition, exists := got[strings.Index(entry, tc.marker)]
+		if !exists || definition.PopupOnly != tc.popupOnly || (definition.Reason != "") != tc.hasReason || len(definition.Snippets) != 1 {
+			t.Errorf("%q: got %+v; want PopupOnly %v, reason %v, one snippet", tc.marker, definition, tc.popupOnly, tc.hasReason)
+		}
+	}
+	for _, marker := range []string{"Missing", "absent()", "println(", "Values)"} {
+		if definition := got[strings.Index(entry, marker)]; definition.PopupOnly {
+			t.Errorf("nonvariable %q marked popup-only: %+v", marker, definition)
 		}
 	}
 }

@@ -193,7 +193,11 @@ func TestExternalReplaceContextsAndSubset(t *testing.T) {
 		if values.Reason != "" || len(values.Snippets) != 2 {
 			t.Fatalf("slice: %+v", values)
 		}
-		for _, marker := range []string{"Ignored", "Scalar", "Func()"} {
+		scalar := externalDefinition(t, p, id, "Scalar")
+		if scalar.Reason != "" || scalar.VariableID == 0 || scalar.Length != len("Scalar") || len(scalar.Snippets) != 1 || scalar.Snippets[0].Source != "var Scalar = 2" || scalar.Snippets[0].File != def.Snippets[0].File {
+			t.Fatalf("external scalar variable: %+v", scalar)
+		}
+		for _, marker := range []string{"Ignored", "Func()"} {
 			def := externalDefinition(t, p, id, marker)
 			if len(def.Snippets) != 0 {
 				t.Fatalf("external unsupported object: %+v", def)

@@ -44,9 +44,9 @@ func TestScreenChromeLayout(t *testing.T) {
 func TestScreenContextualChrome(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	s.agent.options.excludes = []string{"main.go"}
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "E")
 	frame := sgrPattern.ReplaceAllString(s.render(120, 24, true), "")
-	for _, want := range []string{"AGENT  エージェントの解説", "e AI送信", "s 構文"} {
+	for _, want := range []string{"AGENT  エージェントの解説", "E 解説", "s 構文"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("agent chrome missing %q", want)
 		}
@@ -56,7 +56,7 @@ func TestScreenContextualChrome(t *testing.T) {
 			t.Fatalf("obsolete confirmation chrome %q", obsolete)
 		}
 	}
-	agentTestKey(t, s, "i")
+	agentTestKey(t, s, "e")
 	if !strings.Contains(s.render(120, 24, false), " INPUT ") {
 		t.Fatal("input mode missing")
 	}
@@ -65,7 +65,7 @@ func TestScreenContextualChrome(t *testing.T) {
 func TestUIBarAndHelp(t *testing.T) {
 	for width := 41; width < 240; width++ {
 		help := screenHelp(width)
-		if displayWidth(help) > width || !strings.Contains(help, "q 終了") || !strings.Contains(help, "e AI送信") {
+		if displayWidth(help) > width || !strings.Contains(help, "q 終了") || !strings.Contains(help, "E 解説") {
 			t.Fatalf("help at %d: %q", width, help)
 		}
 		bar := uiBar("日本語"+strings.Repeat("x", 300), " 42% · 解説 1/3 ", width)

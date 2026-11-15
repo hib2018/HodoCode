@@ -169,12 +169,9 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		return false, nil
 	}
 	if a := s.agent; a != nil && a.visible {
-		id, top := s.current, s.explanationTop
+		top := s.explanationTop
 		defer func() {
-			if s.current != id {
-				a.scroll[id] = top
-				s.explanationTop = a.scroll[s.current]
-			} else if key != "[" && key != "]" {
+			if key != "[" && key != "]" {
 				s.explanationTop = top
 			}
 		}()

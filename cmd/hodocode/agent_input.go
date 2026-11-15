@@ -45,9 +45,8 @@ func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 			in.status = "指示を入力してください。"
 			return true
 		}
-		a.questions[in.id] = instruction
 		a.input = nil
-		s.agentKey(ctx, "e")
+		s.startAgent(ctx, in.id, instruction)
 	case 0x7f, 0x08:
 		in.partial = ""
 		if len(in.text) > 0 {

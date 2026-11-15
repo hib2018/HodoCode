@@ -131,7 +131,7 @@ func TestDefinitionPaneDoesNotReplaceConversation(t *testing.T) {
 	s := definitionScreen(t)
 	s.agent = newAgentPane(agentOptions{})
 	s.agent.visible = true
-	s.agent.texts[s.current] = "saved conversation"
+	s.agent.text = "saved conversation"
 	pointDefinition(t, s, "_ = 名前", "名前")
 	want := s.paneLines(100, 20)
 	press(t, s, "right")
@@ -142,7 +142,7 @@ func TestDefinitionPaneDoesNotReplaceConversation(t *testing.T) {
 	if s.agent.visible || !strings.Contains(strings.Join(s.paneLines(100, 20), "\n"), "type Item struct") {
 		t.Fatal("s did not restore local definitions")
 	}
-	if s.agent.texts[s.current] != "saved conversation" {
+	if s.agent.text != "saved conversation" {
 		t.Fatal("conversation lost")
 	}
 }

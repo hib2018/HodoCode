@@ -182,7 +182,7 @@ func TestCallTreeLoopEscapeAndModalKeys(t *testing.T) {
 	if n := s.tree.selected; !n.loaded || n.open {
 		t.Fatal("Space bytes did not toggle the selected branch open and closed")
 	}
-	if s.agent.visible || s.agent.input != nil || len(s.agent.texts) != 0 {
+	if s.agent.visible || s.agent.input != nil || len(s.agent.text) != 0 {
 		t.Fatal("popup keys reached the agent pane")
 	}
 }

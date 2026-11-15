@@ -78,7 +78,7 @@ func TestAgentStartsImmediatelyAndIgnoresConfirmationKeys(t *testing.T) {
 		}
 	}
 	s.explanationTop = 9
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "E")
 	if !s.agent.visible || s.agent.cancel == nil || s.explanationTop != 0 || s.syntaxTop != 9 {
 		t.Fatal("e did not immediately start generation and preserve syntax scrolling")
 	}
@@ -92,9 +92,11 @@ func TestAgentStartsImmediatelyAndIgnoresConfirmationKeys(t *testing.T) {
 			t.Fatalf("agent handled obsolete confirmation key %q during generation", key)
 		}
 	}
-	agentTestKey(t, s, "e")
-	if calls.Load() != 1 {
-		t.Fatal("e started a duplicate job")
+	for _, key := range []string{"e", "E"} {
+		agentTestKey(t, s, key)
+		if calls.Load() != 1 || s.agent.input != nil || !strings.Contains(s.agent.text, "生成中") {
+			t.Fatal("generation did not block duplicate input and generation")
+		}
 	}
 	agentTestKey(t, s, "s")
 	if s.agent.visible || s.explanationTop != 9 || !reflect.DeepEqual(s.paneLines(40, 10), s.explanationLines(40, 10)) {
@@ -126,7 +128,7 @@ func TestAgentImmediateTwoCallsAndNavigationCache(t *testing.T) {
 		}
 	})
 	s.explanationTop = 8
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "E")
 	if s.agent.cancel == nil || s.explanationTop != 0 || s.syntaxTop != 8 {
 		t.Fatal("e did not start a job and save syntax scroll")
 	}
@@ -162,14 +164,15 @@ func TestAgentImmediateTwoCallsAndNavigationCache(t *testing.T) {
 	if !strings.Contains(prompts[1], "func First()") || !strings.Contains(prompts[1], "println") || strings.Contains(prompts[1], "func Second()") {
 		t.Fatal("answer request did not contain only selected sanitized source")
 	}
-	if s.current != other || s.explanationTop != 3 || s.agent.texts[other] != "" {
-		t.Fatal("background result changed the navigated function's pane")
+	if s.current != other || s.explanationTop != 0 {
+		t.Fatal("background result lost navigation or did not focus shared chat")
 	}
-	if strings.Contains(strings.Join(s.paneLines(100, 10), "\n"), result.text) {
-		t.Fatal("answer appeared on the wrong function")
+	pane := strings.Join(s.paneLines(100, 10), "\n")
+	if !strings.Contains(pane, result.text) || !strings.Contains(pane, "対象: "+target) {
+		t.Fatal("shared answer did not identify the original target")
 	}
 	press(t, s, "b")
-	if !strings.Contains(strings.Join(s.paneLines(100, 10), "\n"), result.text) || !strings.Contains(s.agent.texts[target], "エージェントの解説") {
+	if !strings.Contains(strings.Join(s.paneLines(100, 10), "\n"), result.text) || !strings.Contains(s.agent.text, "エージェントの解説") {
 		t.Fatal("returning to the original function did not show its cached answer")
 	}
 }
@@ -181,8 +184,8 @@ func TestAgentExcludedTargetDoesNotTransmit(t *testing.T) {
 		return "", nil
 	})
 	s.agent.options.excludes = []string{"main.go"}
-	agentTestKey(t, s, "e")
-	if s.agent.cancel != nil || !strings.Contains(s.agent.texts[s.current], "target is excluded or blocked") {
+	agentTestKey(t, s, "E")
+	if s.agent.cancel != nil || !strings.Contains(s.agent.text, "target is excluded or blocked") {
 		t.Fatalf("excluded target was not rejected: %+v", s.agent)
 	}
 	if s.agentKey(context.Background(), "y") || calls.Load() != 0 {
@@ -203,7 +206,7 @@ func TestAgentPaneSanitizesAndWraps(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &screen{agent: newAgentPane(agentOptions{}), screenPosition: screenPosition{current: "target"}}
 			s.agent.visible = true
-			s.agent.texts[s.current] = tc.text
+			s.agent.text = tc.text
 			got := s.paneLines(tc.width, 10)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("paneLines = %q, want %q", got, tc.want)
@@ -226,7 +229,7 @@ func TestAgentScreenLoopExitCancelsRunner(t *testing.T) {
 				<-ctx.Done()
 				return "", ctx.Err()
 			})
-			agentTestKey(t, s, "e")
+			agentTestKey(t, s, "E")
 			select {
 			case <-started:
 			case <-time.After(5 * time.Second):
@@ -275,7 +278,7 @@ func TestAgentScreenLoopDisplaysAnswer(t *testing.T) {
 		step++
 		switch step {
 		case 1:
-			return 'e', true, nil
+			return 'E', true, nil
 		case 2:
 			if s.agent.cancel == nil {
 				return 'q', true, nil
@@ -331,14 +334,14 @@ func TestAgentTimeout(t *testing.T) {
 		return "", ctx.Err()
 	})
 	s.agent.options.timeout = time.Second
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "E")
 	s.explanationTop = 7
 	result := agentTestResult(t, s)
 	if !errors.Is(result.err, context.DeadlineExceeded) || calls.Load() != 1 {
 		t.Fatalf("timeout result=%+v calls=%d", result, calls.Load())
 	}
-	if s.explanationTop != 0 || !strings.Contains(s.agent.texts[s.current], "解説に失敗") || !strings.Contains(s.agent.texts[s.current], "context deadline exceeded") {
-		t.Fatalf("timeout was not displayed: %q", s.agent.texts[s.current])
+	if s.explanationTop != 0 || !strings.Contains(s.agent.text, "解説に失敗") || !strings.Contains(s.agent.text, "context deadline exceeded") {
+		t.Fatalf("timeout was not displayed: %q", s.agent.text)
 	}
 }
 
@@ -347,7 +350,7 @@ func TestAgentResultWhileSyntaxVisiblePreservesScroll(t *testing.T) {
 		return "", errors.New("offline")
 	})
 	s.explanationTop = 4
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "E")
 	agentTestKey(t, s, "s")
 	s.explanationTop = 7
 	agentTestResult(t, s)

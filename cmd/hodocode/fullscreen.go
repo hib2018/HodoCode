@@ -365,7 +365,7 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	if s.agent == nil || !s.agent.visible {
 		notes, noteSyntax = s.localExplanation(noteWidth-2, body)
 	} else {
-		notes = s.paneLines(noteWidth-2, body)
+		notes, noteSyntax = s.paneContent(noteWidth-2, body)
 	}
 	s.explanationTop = min(s.explanationTop, max(0, len(notes)-body))
 	for i := 0; i < body; i++ {

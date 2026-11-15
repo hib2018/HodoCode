@@ -165,14 +165,20 @@ func wrapPaneText(text string, width int) []string {
 }
 
 func (s *screen) paneLines(width, height int) []string {
+	lines, _ := s.paneContent(width, height)
+	return lines
+}
+
+func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) {
 	if s.agent == nil || !s.agent.visible {
-		return s.explanationLines(width, height)
+		return s.explanationLines(width, height), nil
 	}
 	text := s.agent.text
 	if text == "" {
 		text = fmt.Sprintf("エージェント解説\n%s\ne:追加指示 / E:解説を生成 / s:構文解説", s.current)
 	}
 	lines := wrapPaneText(text, width)
+	spans := make([][]syntaxHighlight, len(lines))
 	lastReply := 0
 	for _, message := range s.agent.history {
 		lines = append(lines, "")
@@ -182,17 +188,31 @@ func (s *screen) paneLines(width, height int) []string {
 			label = "エージェント"
 			lastReply = len(lines)
 		}
-		lines = append(lines, wrapPaneText(label+"\n対象: "+message.id+"\n"+message.Content, width)...)
+		lines = append(lines, wrapPaneText(label+"\n対象: "+message.id, width)...)
+		for len(spans) < len(lines) {
+			spans = append(spans, nil)
+		}
+		if message.Role == "assistant" {
+			body, styles := markdownLines(message.Content, width)
+			lines = append(lines, body...)
+			spans = append(spans, styles...)
+		} else {
+			lines = append(lines, wrapPaneText(message.Content, width)...)
+			for len(spans) < len(lines) {
+				spans = append(spans, nil)
+			}
+		}
 	}
 	// Leave room below a short reply so its first line can stay at the top.
 	if lastReply > 0 {
 		for len(lines) < lastReply+height {
 			lines = append(lines, "")
+			spans = append(spans, nil)
 		}
 		if s.agent.focusReply {
 			s.explanationTop = lastReply
 			s.agent.focusReply = false
 		}
 	}
-	return lines
+	return lines, spans
 }

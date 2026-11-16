@@ -18,14 +18,14 @@ func setDisplayComments(s *screen, comments map[int][]string) {
 func TestInlineDisplayWrapAndMapping(t *testing.T) {
 	code := []string{"1 │ first", "2 │ second", "3 │ third"}
 	rows := makeInlineDisplay(code, map[int][]string{0: {"日本語の説明\tvalue\x1b[31m"}, 1: {"one", "two"}, -1: {"invalid"}, 8: {"invalid"}}, 12)
-	if rows[0].comment || rows[0].codeRow != 0 || !rows[1].comment || !strings.HasPrefix(rows[1].text, "AI解説 ") {
+	if rows[0].comment || rows[0].codeRow != 0 || !rows[1].comment || !strings.HasPrefix(strings.TrimSpace(rows[1].text), "╭─ AI解説 ") {
 		t.Fatalf("code must precede its marked comments: %+v", rows)
 	}
 	comments := 0
 	for _, row := range rows {
 		if row.comment {
 			comments++
-			if displayWidth(row.text) > 12 || strings.ContainsAny(row.text, "\x1b\t") || strings.Contains(row.text, " │ ") {
+			if displayWidth(row.text) > 12 || strings.ContainsAny(row.text, "\x1b\t") || strings.HasPrefix(strings.TrimSpace(row.text), "1 │ ") {
 				t.Fatalf("unsafe, numbered or over-wide comment: %+v", row)
 			}
 		}
@@ -127,8 +127,12 @@ func TestInlineDisplayRenderAndTerminalCursor(t *testing.T) {
 	s.cursorRow, s.cursorColumn = 1, 0
 	const width, height = 120, 20
 	frame := s.render(width, height, true)
-	if !strings.Contains(frame, "\x1b[38;5;110mAI解説 ") {
-		t.Fatal("inline comment not rendered in its dedicated color")
+	if !strings.Contains(frame, "\x1b[38;5;153;48;5;235m") || !strings.Contains(frame, "╭─ AI解説 ") {
+		t.Fatal("inline comment block not rendered with its muted background")
+	}
+	plain := s.render(width, height, false)
+	if sgrPattern.MatchString(plain) || sgrPattern.ReplaceAllString(frame, "") != plain {
+		t.Fatal("colorless rendering changed the comment layout or emitted styles")
 	}
 	var out bytes.Buffer
 	err := screenLoop(context.Background(), s, &out, func() (byte, bool, error) { return 0, false, io.EOF }, func() (int, int, error) { return width, height, nil }, false)
@@ -136,7 +140,7 @@ func TestInlineDisplayRenderAndTerminalCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", s.cursorVisualRow(screenCodeWidth(width))-s.top+2, s.cursorCell()-s.horizontal+1)
-	if !strings.Contains(out.String(), want) || s.cursorVisualRow(screenCodeWidth(width)) != 2 {
+	if !strings.Contains(out.String(), want) || s.cursorVisualRow(screenCodeWidth(width)) <= s.cursorRow {
 		t.Fatalf("terminal cursor did not use visual row: want %q", want)
 	}
 }
@@ -153,7 +157,7 @@ func main() {
 	const width, height = 120, 30
 	popup := s.renderVariable(width, height, false)
 	visual := s.cursorVisualRow(screenCodeWidth(width))
-	if visual != s.cursorRow+1 || !strings.HasPrefix(popup, fmt.Sprintf("\x1b[%d;", visual+3)) {
+	if visual <= s.cursorRow || !strings.HasPrefix(popup, fmt.Sprintf("\x1b[%d;", visual+3)) {
 		t.Fatalf("popup is not below the visual cursor: visual=%d popup=%q", visual, popup)
 	}
 	s.top = visual + 1
@@ -208,6 +212,52 @@ func TestInlineDisplayHistorySourceAnchor(t *testing.T) {
 					t.Fatalf("history lost source anchor: want top=%d cursor=%d:%d, got %+v", wantTop, cursorRow, cursorColumn, s.screenPosition)
 				}
 			})
+		}
+	}
+}
+
+func TestInlineDisplayBorderedParagraphs(t *testing.T) {
+	const width = 24
+	code := []string{"123 │ value()", "124 │ next()"}
+	rows := makeInlineDisplay(code, map[int][]string{0: {"abcdefghijklmno", "second"}}, width)
+	indent := strings.Repeat(" ", displayWidth("123 │ "))
+	wantBody := []string{"abcdefghijklm", "no", "", "second"}
+	if len(rows) != len(wantBody)+4 || rows[0].comment || rows[len(rows)-1].comment {
+		t.Fatalf("expected one block after code: %+v", rows)
+	}
+	labelCount := 0
+	for i, row := range rows[1 : len(rows)-1] {
+		if !row.comment || row.codeRow != 0 || !strings.HasPrefix(row.text, indent) || displayWidth(row.text) >= width {
+			t.Fatalf("decoration lost mapping, gutter or right margin: %+v", row)
+		}
+		labelCount += strings.Count(row.text, "AI解説")
+		if i > 0 && i <= len(wantBody) {
+			want := indent + "│ " + displaySlice(wantBody[i-1], 0, 13) + " │"
+			if row.text != want {
+				t.Fatalf("body row %d: got %q want %q", i, row.text, want)
+			}
+		}
+	}
+	if labelCount != 1 || !strings.HasPrefix(rows[len(rows)-2].text, indent+"╰") {
+		t.Fatal("comments did not share one labeled, closed frame")
+	}
+	short := makeInlineDisplay(code, map[int][]string{0: {"short"}}, 120)
+	if displayWidth(short[1].text) >= 30 {
+		t.Fatal("short comment expanded into a full-width frame")
+	}
+	spaced := makeInlineDisplay(code, map[int][]string{0: {" a  b "}}, 120)
+	if !strings.HasPrefix(spaced[2].text, indent+"│  a  b ") {
+		t.Fatal("comment whitespace was rewritten")
+	}
+}
+
+func TestInlineDisplayBorderNarrowAndSanitized(t *testing.T) {
+	for width := 0; width <= 40; width++ {
+		rows := makeInlineDisplay([]string{"123456 │ code"}, map[int][]string{0: {"日本語\ttext\x1b[31m\nnext", "second"}}, width)
+		for _, row := range rows[1:] {
+			if !row.comment || row.codeRow != 0 || displayWidth(row.text) > width || strings.ContainsAny(row.text, "\x1b\t\n") {
+				t.Fatalf("width=%d: unsafe, over-wide or unmapped decoration: %+v", width, row)
+			}
 		}
 	}
 }

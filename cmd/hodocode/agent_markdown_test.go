@@ -318,3 +318,44 @@ func TestMarkdownReplyFocusAndIndependentSyntaxScroll(t *testing.T) {
 		t.Fatal("chat scroll not restored")
 	}
 }
+
+func TestAgentChatVisualHierarchy(t *testing.T) {
+	s := agentTestScreen(t, nil)
+	s.agent.visible = true
+	s.agent.text = "操作案内"
+	s.agent.history = []agentMessage{
+		{id: s.current, Message: explain.Message{Role: "user", Content: "質問の本文"}},
+		{id: s.current, Message: explain.Message{Role: "assistant", Content: "回答の本文"}},
+	}
+	for _, width := range []int{12, 24, 40, 80} {
+		lines, spans := s.paneContent(width, 10)
+		checkMarkdownOutput(t, lines, spans, width)
+		var roles, metadata, rules int
+		for i, line := range lines {
+			if strings.HasPrefix(line, "── ") {
+				rules++
+				if displayWidth(line) != width || len(spans[i]) != 1 {
+					t.Fatalf("rule not fitted/styled: %q", line)
+				}
+			}
+			if line == "利用者" || line == "エージェント" {
+				roles++
+				if len(spans[i]) != 1 || !strings.Contains(spans[i][0].style, "[1;") {
+					t.Fatalf("role not emphasized: %q", line)
+				}
+			}
+			if strings.HasPrefix(line, "対象: ") {
+				metadata++
+				if len(spans[i]) != 1 || spans[i][0].style != "\x1b[38;5;245m" {
+					t.Fatalf("metadata not subdued: %q", line)
+				}
+			}
+			if line == "質問の本文" && len(spans[i]) != 0 {
+				t.Fatal("user body got role styling")
+			}
+		}
+		if roles != 2 || metadata != 2 || rules != 2 {
+			t.Fatalf("missing hierarchy: %q", lines)
+		}
+	}
+}

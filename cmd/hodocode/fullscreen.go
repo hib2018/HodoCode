@@ -411,7 +411,12 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		if row := s.top + i; row < len(rows) {
 			line := rows[row]
 			if line.comment {
-				b.WriteString(uiPaint(displaySlice(line.text, 0, codeWidth), "38;5;110", emphasis))
+				text := displaySlice(line.text, 0, codeWidth)
+				if emphasis {
+					indent := len(line.text) - len(strings.TrimLeft(line.text, " "))
+					text = styledSlice(line.text, 0, codeWidth, []syntaxHighlight{{start: indent, end: displayWidth(line.text), style: "\x1b[38;5;153;48;5;235m"}})
+				}
+				b.WriteString(text)
 			} else {
 				b.WriteString(s.codeLine(line.codeRow, codeWidth, emphasis))
 			}

@@ -176,7 +176,7 @@ func (s *screen) receiveAgentResult() bool {
 			}
 			a.history = append(a.history, agentMessage{id: result.id, comments: result.comments, Message: explain.Message{Role: "assistant", Content: result.text}})
 			a.focusReply = true
-			a.text = "エージェントの解説（回答の根拠を確認してください）\ni:追加質問（/comments 指示でコメント更新） / E:解説を生成 / c:行解説切替 / s:構文解説"
+			a.text = "エージェントの解説 · コードと照合してください\ni:質問  E:再生成  c:行解説  s:構文\nコメント修正: i → /comments 指示"
 		}
 		a.scroll = 0
 		if a.visible {
@@ -226,28 +226,37 @@ func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) 
 	}
 	lines := wrapPaneText(text, width)
 	spans := make([][]syntaxHighlight, len(lines))
+	appendText := func(text, style string) {
+		for _, line := range wrapPaneText(text, width) {
+			lines = append(lines, line)
+			var highlights []syntaxHighlight
+			if cells := displayWidth(line); cells > 0 && style != "" {
+				highlights = []syntaxHighlight{{start: 0, end: cells, style: style}}
+			}
+			spans = append(spans, highlights)
+		}
+	}
 	lastReply := 0
 	for _, message := range s.agent.history {
-		lines = append(lines, "")
-		lines = append(lines, wrapPaneText("──────── 会話 ────────", width)...)
-		label := "利用者"
+		appendText("", "")
+		heading, label, accent := "質問", "利用者", "\x1b[1;38;5;179m"
 		if message.Role == "assistant" {
-			label = "エージェント"
+			heading, label, accent = "回答", "エージェント", "\x1b[1;38;5;110m"
+		}
+		rule := "── " + heading + " "
+		rule += strings.Repeat("─", max(0, width-displayWidth(rule)))
+		appendText(rule, "\x1b[38;5;240m")
+		if message.Role == "assistant" {
 			lastReply = len(lines)
 		}
-		lines = append(lines, wrapPaneText(label+"\n対象: "+message.id, width)...)
-		for len(spans) < len(lines) {
-			spans = append(spans, nil)
-		}
+		appendText(label, accent)
+		appendText("対象: "+message.id, "\x1b[38;5;245m")
 		if message.Role == "assistant" {
 			body, styles := markdownLines(message.Content, width)
 			lines = append(lines, body...)
 			spans = append(spans, styles...)
 		} else {
-			lines = append(lines, wrapPaneText(message.Content, width)...)
-			for len(spans) < len(lines) {
-				spans = append(spans, nil)
-			}
+			appendText(message.Content, "")
 		}
 	}
 	// Leave room below a short reply so its first line can stay at the top.

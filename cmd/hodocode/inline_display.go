@@ -1,6 +1,9 @@
 package main
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // Inline rows are presentation only; every code-facing coordinate stays in s.code.
 type inlineDisplayRow struct {
@@ -13,13 +16,50 @@ func makeInlineDisplay(code []string, comments map[int][]string, width int) []in
 	var rows []inlineDisplayRow
 	for row := range code {
 		rows = append(rows, inlineDisplayRow{codeRow: row})
-		for _, comment := range comments[row] {
-			for _, line := range wrapPaneText("AI解説 "+comment, max(1, width)) {
+		if len(comments[row]) > 0 {
+			for _, line := range inlineCommentBlock(code[row], comments[row], width) {
 				rows = append(rows, inlineDisplayRow{codeRow: row, comment: true, text: line})
 			}
 		}
 	}
 	return rows
+}
+
+func inlineCommentBlock(code string, comments []string, width int) []string {
+	prefix, _, numbered := strings.Cut(code, " │ ")
+	gutter := 0
+	if numbered {
+		gutter = displayWidth(prefix + " │ ")
+	}
+	indent := strings.Repeat(" ", max(0, min(gutter, width-12)))
+	paragraphs := strings.Split(strings.Join(comments, "\n\n"), "\n")
+	longest := 0
+	for i, raw := range paragraphs {
+		paragraphs[i] = displaySlice(raw, 0, displayWidth(raw))
+		longest = max(longest, displayWidth(paragraphs[i]))
+	}
+	frameWidth := max(1, min(width-len(indent)-1, max(11, longest+4)))
+	inner := max(1, frameWidth-4)
+	var lines []string
+	appendLine := func(text string) {
+		lines = append(lines, indent+displaySlice(text, 0, min(max(0, width-len(indent)), frameWidth)))
+	}
+	appendLine("╭─ AI解説 " + strings.Repeat("─", max(0, frameWidth-11)) + "╮")
+	for _, raw := range paragraphs {
+		line, cells := "", 0
+		for _, r := range raw {
+			n := runeWidth(r)
+			if cells > 0 && cells+n > inner {
+				appendLine("│ " + displaySlice(line, 0, inner) + " │")
+				line, cells = "", 0
+			}
+			line += string(r)
+			cells += n
+		}
+		appendLine("│ " + displaySlice(line, 0, inner) + " │")
+	}
+	appendLine("╰" + strings.Repeat("─", max(0, frameWidth-2)) + "╯")
+	return lines
 }
 
 func (s *screen) displayRows(width int) []inlineDisplayRow {

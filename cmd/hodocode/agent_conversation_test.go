@@ -24,9 +24,9 @@ func TestAgentConversationPreservesAnswersAndFailures(t *testing.T) {
 			return `["example.com/screen.First"]`, nil
 		}
 		if calls == 2 {
-			return "INITIAL_ANSWER", nil
+			return lineAnswer("INITIAL_ANSWER"), nil
 		}
-		return "FOLLOWUP_ANSWER", nil
+		return lineAnswer("FOLLOWUP_ANSWER"), nil
 	})
 	agentTestKey(t, s, "E")
 	agentTestResult(t, s)
@@ -99,7 +99,7 @@ func TestAgentConversationSyntaxChatRestoresIndependentScroll(t *testing.T) {
 		if calls == 1 {
 			return `["example.com/screen.First"]`, nil
 		}
-		return strings.Repeat("CHAT_HISTORY\n", 40), nil
+		return lineAnswer(strings.Repeat("CHAT_HISTORY\n", 40)), nil
 	})
 	s.explanationTop = 2
 	agentTestKey(t, s, "E")

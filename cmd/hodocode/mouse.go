@@ -101,14 +101,24 @@ func (s *screen) handleMouse(event mouseEvent, width, height int) bool {
 		return false
 	}
 	body, codeWidth := height-3, screenCodeWidth(width)
+	rows := s.displayRows(codeWidth)
 	if event.delta == 0 {
 		if event.x > codeWidth || s.search.input != nil || s.agent != nil && s.agent.input != nil {
 			return false
 		}
-		return s.clickCode(s.top+event.y-2, s.horizontal+event.x-1)
+		visual := s.top + event.y - 2
+		if visual < 0 || visual >= len(rows) {
+			return false
+		}
+		row := rows[visual]
+		cell := s.horizontal + event.x - 1
+		if row.comment {
+			cell = 0
+		}
+		return s.clickCode(row.codeRow, cell)
 	}
 	if event.x <= codeWidth {
-		s.top = max(0, min(max(0, len(s.code)-body), s.top+event.delta))
+		s.top = max(0, min(max(0, len(rows)-body), s.top+event.delta))
 		return true
 	}
 	if event.x <= codeWidth+3 {

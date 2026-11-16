@@ -72,7 +72,7 @@ func (s *screen) renderVariable(width, height int, color bool) string {
 		return ""
 	}
 	body, codeWidth := height-3, screenCodeWidth(width)
-	cursor := s.cursorRow - s.top
+	cursor := s.cursorVisualRow(codeWidth) - s.top
 	if cursor < 0 || cursor >= body {
 		return ""
 	}

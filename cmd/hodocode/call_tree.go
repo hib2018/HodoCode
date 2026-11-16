@@ -177,13 +177,14 @@ func (s *screen) treeKey(key string, height, codeWidth int) (bool, error) {
 		if err := s.flow.expand(n.site.To); err != nil {
 			return false, err
 		}
+		saved := s.savedPosition(codeWidth)
 		previous := s.screenPosition
 		s.screenPosition = screenPosition{current: n.site.To}
 		if err := s.refresh(); err != nil {
 			s.screenPosition = previous
 			return false, err
 		}
-		s.history = append(s.history, previous)
+		s.history = append(s.history, saved)
 		s.jumpCall()
 		s.followCursor(height, codeWidth)
 		t.visible = false

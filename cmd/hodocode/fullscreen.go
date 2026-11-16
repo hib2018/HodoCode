@@ -32,6 +32,8 @@ type screen struct {
 	sites                       []analyze.CallSite
 	highlights                  []callHighlight
 	code                        []string
+	display                     []inlineDisplayRow
+	displayFunction             string
 	syntax                      [][]syntaxHighlight
 	location                    string
 	explanations                []syntaxExplanation
@@ -148,17 +150,19 @@ func (s *screen) reason(site analyze.CallSite) string {
 }
 
 func (s *screen) follow(height, width int) {
+	rows := s.displayRows(width)
 	if len(s.highlights) == 0 {
 		return
 	}
 	h := s.highlights[s.selected]
-	if h.row < s.top {
-		s.top = h.row
+	row := codeVisualRow(rows, h.row)
+	if row < s.top {
+		s.top = row
 	}
-	if h.row >= s.top+height {
-		s.top = h.row - height + 1
+	if row >= s.top+height {
+		s.top = row - height + 1
 	}
-	s.top = max(0, min(s.top, max(0, len(s.code)-height)))
+	s.top = max(0, min(s.top, max(0, len(rows)-height)))
 	if h.start < s.horizontal {
 		s.horizontal = h.start
 	}
@@ -250,9 +254,18 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		if key == "pageup" {
 			delta = -height
 		}
-		s.top = max(0, min(max(0, len(s.code)-height), s.top+delta))
-		s.cursorRow = max(s.top, min(s.top+height-1, s.cursorRow+delta))
+		rows := s.displayRows(codeWidth)
+		visual := codeVisualRow(rows, s.cursorRow)
+		s.top = max(0, min(max(0, len(rows)-height), s.top+delta))
+		target := max(s.top, min(s.top+height-1, visual+delta))
+		target = max(0, min(len(rows)-1, target))
+		s.cursorRow = rows[target].codeRow
+		top := s.top
 		s.followCursor(height, codeWidth)
+		// A page may contain only comments; keep scrolling even if its anchor is above it.
+		if rows[target].comment {
+			s.top = top
+		}
 		s.explanationTop = 0
 	case "left", "h", "right", "l", "0", "$", "w", "B", "g", "G":
 		switch key {
@@ -280,6 +293,7 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 			if err := s.refresh(); err != nil {
 				return false, err
 			}
+			s.restoreHistoryTop(codeWidth)
 			s.followCursor(height, codeWidth)
 			return false, nil
 		}
@@ -296,7 +310,7 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		if err := s.flow.expand(site.To); err != nil {
 			return false, err
 		}
-		s.history = append(s.history, s.screenPosition)
+		s.history = append(s.history, s.savedPosition(codeWidth))
 		s.screenPosition = screenPosition{current: site.To}
 		if err := s.refresh(); err != nil {
 			return false, err
@@ -369,7 +383,8 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	body := height - 3
 	codeWidth := screenCodeWidth(width)
 	noteWidth := width / 3
-	s.top = max(0, min(s.top, max(0, len(s.code)-body)))
+	rows := s.displayRows(codeWidth)
+	s.top = max(0, min(s.top, max(0, len(rows)-body)))
 	longest := 0
 	for _, line := range s.code {
 		longest = max(longest, displayWidth(line))
@@ -393,8 +408,13 @@ func (s *screen) render(width, height int, emphasis bool) string {
 	s.explanationTop = min(s.explanationTop, max(0, len(notes)-body))
 	for i := 0; i < body; i++ {
 		fmt.Fprintf(&b, "\x1b[%d;1H", i+2)
-		if row := s.top + i; row < len(s.code) {
-			b.WriteString(s.codeLine(row, codeWidth, emphasis))
+		if row := s.top + i; row < len(rows) {
+			line := rows[row]
+			if line.comment {
+				b.WriteString(uiPaint(displaySlice(line.text, 0, codeWidth), "38;5;110", emphasis))
+			} else {
+				b.WriteString(s.codeLine(line.codeRow, codeWidth, emphasis))
+			}
 		} else {
 			b.WriteString(strings.Repeat(" ", codeWidth))
 		}
@@ -627,10 +647,11 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if dirty {
 			frame := "\x1b[?25l" + s.render(width, height, bold)
+			cursor := s.cursorVisualRow(screenCodeWidth(width))
 			if width >= 41 && height >= 8 && (s.tree == nil || !s.tree.visible) &&
-				s.cursorRow >= s.top && s.cursorRow < s.top+height-3 &&
+				cursor >= s.top && cursor < s.top+height-3 &&
 				s.cursorCell() >= s.horizontal && s.cursorCell() < s.horizontal+screenCodeWidth(width) {
-				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", s.cursorRow-s.top+2, s.cursorCell()-s.horizontal+1)
+				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", cursor-s.top+2, s.cursorCell()-s.horizontal+1)
 			}
 			if s.search.input != nil && width >= 41 && height >= 8 {
 				column := 10 + min(displayWidth("/"+s.search.input.text), width-10)

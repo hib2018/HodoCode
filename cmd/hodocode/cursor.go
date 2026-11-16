@@ -31,9 +31,10 @@ func (s *screen) callAtCursor() int {
 func (s *screen) followCursor(height, width int) {
 	s.cursorRow = max(0, min(s.cursorRow, len(s.code)-1))
 	s.cursorColumn = max(0, min(s.cursorColumn, max(0, utf8.RuneCountInString(s.rawLine(s.cursorRow))-1)))
-	s.top = max(0, min(s.top, s.cursorRow))
-	if s.cursorRow >= s.top+height {
-		s.top = s.cursorRow - height + 1
+	row := s.cursorVisualRow(width)
+	s.top = max(0, min(s.top, row))
+	if row >= s.top+height {
+		s.top = row - height + 1
 	}
 	cell := s.cursorCell()
 	if cell < s.horizontal {

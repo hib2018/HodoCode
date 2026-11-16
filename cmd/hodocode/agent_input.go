@@ -46,7 +46,16 @@ func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 			return true
 		}
 		a.input = nil
-		s.startAgent(ctx, in.id, instruction)
+		if instruction == "/comments" {
+			in.status = "/comments の後にコメントの修正指示を入力してください。"
+			a.input = in
+			return true
+		}
+		if strings.HasPrefix(instruction, "/comments ") {
+			s.startAgentRequest(ctx, in.id, strings.TrimSpace(strings.TrimPrefix(instruction, "/comments ")), true)
+		} else {
+			s.startAgent(ctx, in.id, instruction)
+		}
 	case 0x7f, 0x08:
 		in.partial = ""
 		if len(in.text) > 0 {

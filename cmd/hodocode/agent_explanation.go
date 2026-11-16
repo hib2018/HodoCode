@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -20,27 +21,33 @@ type agentOptions struct {
 type agentResult struct {
 	id, text string
 	err      error
+	inline   bool
+	comments []explain.LineComment
+	snapshot commentSnapshot
 }
 
 type agentMessage struct {
-	id string
+	id       string
+	comments []explain.LineComment
 	explain.Message
 }
 
 type agentPane struct {
-	options    agentOptions
-	visible    bool
-	text       string
-	results    chan agentResult
-	cancel     context.CancelFunc
-	history    []agentMessage
-	focusReply bool
-	scroll     int
-	input      *agentInput
+	options        agentOptions
+	visible        bool
+	text           string
+	results        chan agentResult
+	cancel         context.CancelFunc
+	history        []agentMessage
+	focusReply     bool
+	scroll         int
+	input          *agentInput
+	comments       map[string]functionComments
+	commentsHidden bool
 }
 
 func newAgentPane(options agentOptions) *agentPane {
-	return &agentPane{options: options, results: make(chan agentResult, 1)}
+	return &agentPane{options: options, results: make(chan agentResult, 1), comments: make(map[string]functionComments)}
 }
 
 // All pane state stays on the screen loop; the worker only owns its snapshot.
@@ -50,6 +57,8 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 		return false
 	}
 	switch key {
+	case "c":
+		a.commentsHidden = !a.commentsHidden
 	case "s":
 		if a.visible {
 			a.scroll = s.explanationTop
@@ -71,7 +80,7 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 			s.explanationTop = 0
 			return true
 		}
-		s.startAgent(ctx, s.current, "表示中の関数の解説を生成してください。")
+		s.startAgentRequest(ctx, s.current, "表示中の関数の解説を生成してください。", true)
 	case "i":
 		if !a.visible {
 			return false
@@ -92,6 +101,10 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 }
 
 func (s *screen) startAgent(ctx context.Context, id, question string) {
+	s.startAgentRequest(ctx, id, question, false)
+}
+
+func (s *screen) startAgentRequest(ctx context.Context, id, question string, inline bool) {
 	a := s.agent
 	if a.cancel != nil {
 		return
@@ -105,11 +118,23 @@ func (s *screen) startAgent(ctx context.Context, id, question string) {
 	}
 	history := make([]explain.Message, 0, len(a.history))
 	for _, message := range a.history {
-		history = append(history, explain.Message{Role: message.Role, Content: fmt.Sprintf("対象の関数ID: %s\n%s", message.id, message.Content)})
+		content := fmt.Sprintf("対象の関数ID: %s\n%s", message.id, message.Content)
+		if len(message.comments) > 0 {
+			comments, _ := json.Marshal(message.comments)
+			content += "\n行別解説: " + string(comments)
+		}
+		history = append(history, explain.Message{Role: message.Role, Content: content})
 	}
 	req, err := explain.Prepare(s.p, id, a.options.purpose, edges, a.options.excludes)
 	if err == nil {
 		req, err = req.WithConversation(history, question)
+	}
+	if err == nil && inline {
+		req, err = req.WithLineComments()
+	}
+	var snapshot commentSnapshot
+	if err == nil && inline {
+		snapshot, err = snapshotComments(s.p, id)
 	}
 	if err != nil {
 		a.text = "解説の準備に失敗しました（送信していません）。i:再入力 / E:解説を再生成\n" + err.Error()
@@ -125,7 +150,13 @@ func (s *screen) startAgent(ctx context.Context, id, question string) {
 	go func() {
 		defer cancel()
 		text, err := req.Explain(jobCtx, runner)
-		results <- agentResult{id: id, text: text, err: err}
+		result := agentResult{id: id, text: text, err: err, inline: inline, snapshot: snapshot}
+		if err == nil && inline {
+			answer, parseErr := explain.ParseLineExplanation(text)
+			result.err = parseErr
+			result.text, result.comments = answer.Summary, answer.Comments
+		}
+		results <- result
 	}()
 }
 
@@ -140,9 +171,12 @@ func (s *screen) receiveAgentResult() bool {
 		if result.err != nil {
 			a.text = "解説に失敗しました。i:再入力 / E:解説を再生成\n対象: " + result.id + "\n" + result.err.Error()
 		} else {
-			a.history = append(a.history, agentMessage{id: result.id, Message: explain.Message{Role: "assistant", Content: result.text}})
+			if result.inline {
+				s.storeComments(&result)
+			}
+			a.history = append(a.history, agentMessage{id: result.id, comments: result.comments, Message: explain.Message{Role: "assistant", Content: result.text}})
 			a.focusReply = true
-			a.text = "エージェントの解説（回答の根拠を確認してください）\ni:追加質問 / E:解説を生成 / s:構文解説"
+			a.text = "エージェントの解説（回答の根拠を確認してください）\ni:追加質問（/comments 指示でコメント更新） / E:解説を生成 / c:行解説切替 / s:構文解説"
 		}
 		a.scroll = 0
 		if a.visible {
@@ -186,6 +220,9 @@ func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) 
 	text := s.agent.text
 	if text == "" {
 		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / E:解説を生成 / s:構文解説", s.current)
+	}
+	if s.agent.comments[s.current].stale {
+		text += "\n" + staleCommentsAdvice
 	}
 	lines := wrapPaneText(text, width)
 	spans := make([][]syntaxHighlight, len(lines))

@@ -204,6 +204,11 @@ func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighli
 			appendLine(line, cells)
 		}
 	}
+	if s.agent != nil && s.agent.comments[s.current].stale {
+		advice := wrapPaneText(staleCommentsAdvice, width)
+		lines = append(advice, lines...)
+		styles = append(make([][]syntaxHighlight, len(advice)), styles...)
+	}
 	return lines, styles
 }
 

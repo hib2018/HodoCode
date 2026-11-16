@@ -100,14 +100,27 @@ func (s *screen) reload(height, width int) error {
 	if err := next.refresh(); err != nil {
 		return err
 	}
-	next.followCursor(height, width)
 	next.nvimServer = s.nvimServer
 	if s.agent != nil {
 		if s.agent.cancel != nil {
 			s.agent.cancel()
 		}
 		next.agent = newAgentPane(s.agent.options)
+		next.agent.visible = s.agent.visible
+		next.agent.text = s.agent.text
+		if s.agent.cancel != nil {
+			next.agent.text = "再読み込みにより生成を中断しました。E で再生成してください。"
+		}
+		next.agent.history = append([]agentMessage(nil), s.agent.history...)
+		next.agent.scroll = s.agent.scroll
+		next.agent.commentsHidden = s.agent.commentsHidden
+		next.agent.comments = s.agent.comments
+		next.agent.revalidateComments(p)
+		if next.agent.comments[current].stale {
+			next.explanationTop = 0
+		}
 	}
+	next.followCursor(height, width)
 	next.notice = "再読み込みしました"
 	if current != s.current {
 		next.notice += "。表示中の関数がなくなったため " + current + " へ移動しました"

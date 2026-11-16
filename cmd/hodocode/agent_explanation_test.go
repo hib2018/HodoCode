@@ -122,7 +122,7 @@ func TestAgentImmediateTwoCallsAndNavigationCache(t *testing.T) {
 		}
 		select {
 		case <-release:
-			return "First calls Second (main.go:4).", nil
+			return lineAnswer("First calls Second (main.go:4)."), nil
 		case <-ctx.Done():
 			return "", ctx.Err()
 		}
@@ -270,7 +270,7 @@ func TestAgentScreenLoopDisplaysAnswer(t *testing.T) {
 		if calls == 1 {
 			return `["example.com/screen.First"]`, nil
 		}
-		return "ANSWER_FROM_AGENT", nil
+		return lineAnswer("ANSWER_FROM_AGENT"), nil
 	})
 	var output bytes.Buffer
 	step := 0

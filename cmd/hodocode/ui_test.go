@@ -46,7 +46,7 @@ func TestScreenContextualChrome(t *testing.T) {
 	s.agent.options.excludes = []string{"main.go"}
 	agentTestKey(t, s, "E")
 	frame := sgrPattern.ReplaceAllString(s.render(120, 24, true), "")
-	for _, want := range []string{"AGENT  エージェントの解説", "E 解説", "s 構文"} {
+	for _, want := range []string{"AGENT  エージェントの解説", "e 表示", "i 入力", "i:再入力", "E 解説", "s 構文"} {
 		if !strings.Contains(frame, want) {
 			t.Fatalf("agent chrome missing %q", want)
 		}
@@ -56,7 +56,7 @@ func TestScreenContextualChrome(t *testing.T) {
 			t.Fatalf("obsolete confirmation chrome %q", obsolete)
 		}
 	}
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	if !strings.Contains(s.render(120, 24, false), " INPUT ") {
 		t.Fatal("input mode missing")
 	}

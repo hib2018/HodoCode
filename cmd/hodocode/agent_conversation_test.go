@@ -31,16 +31,16 @@ func TestAgentConversationPreservesAnswersAndFailures(t *testing.T) {
 	agentTestKey(t, s, "E")
 	agentTestResult(t, s)
 	// Opening input must not send or discard the previous answer.
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	if s.agent.cancel != nil || calls != 2 || s.agent.input == nil {
-		t.Fatal("e sent a request")
+		t.Fatal("i sent a request")
 	}
 	typeAgentInput(t, s, "この説明の理由は？\x1b")
 	if !s.agentInputIdle() || len(s.agent.history) != 2 || calls != 2 || !strings.Contains(strings.Join(s.paneLines(100, 10), "\n"), "INITIAL_ANSWER") {
 		t.Fatal("cancel lost the initial answer or sent the question")
 	}
 	fail = true
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "この説明の理由は？\r")
 	agentTestResult(t, s)
 	pane := strings.Join(s.paneLines(100, 10), "\n")
@@ -82,6 +82,7 @@ func TestAgentConversationOverflowDoesNotTransmitOrTruncate(t *testing.T) {
 	original := strings.Repeat("過去の回答", 20000)
 	s.agent.history = []agentMessage{{id: s.current, Message: explain.Message{Role: "assistant", Content: original}}}
 	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "続きは？\r")
 	if s.agent.cancel != nil || calls != 0 {
 		t.Fatal("oversized history was sent")
@@ -113,8 +114,6 @@ func TestAgentConversationSyntaxChatRestoresIndependentScroll(t *testing.T) {
 		}
 		agentTestKey(t, s, "s")
 		agentTestKey(t, s, "e")
-		typeAgentInput(t, s, "\x1b")
-		s.agentInputIdle()
 		s.paneLines(40, 10)
 		if !s.agent.visible || s.explanationTop != 12 || calls != 2 || s.agent.cancel != nil || !reflect.DeepEqual(s.agent.history, history) {
 			t.Fatal("s -> e regenerated chat or lost its history/scroll")
@@ -126,9 +125,14 @@ func TestAgentConversationSyntaxChatRestoresIndependentScroll(t *testing.T) {
 	}
 }
 
-func TestAgentOldInputKeyIsNotHandled(t *testing.T) {
+func TestAgentInputKeyOnlyInAgentView(t *testing.T) {
 	s := agentTestScreen(t, nil)
-	if s.agentKey(context.Background(), "i") {
-		t.Fatal("obsolete i key was handled")
+	if s.agentKey(context.Background(), "i") || s.agent.input != nil || s.agent.visible {
+		t.Fatal("i opened input in syntax view")
+	}
+	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
+	if s.agent.input == nil || s.agent.input.id != s.current || s.agent.cancel != nil {
+		t.Fatal("i did not open input for the displayed function")
 	}
 }

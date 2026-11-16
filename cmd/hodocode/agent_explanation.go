@@ -62,18 +62,28 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 			a.visible = true
 			s.explanationTop = a.scroll
 		}
+		if key == "e" {
+			return true
+		}
 		if a.cancel != nil {
 			a.focusReply = false
-			a.text = "生成中は追加指示を入力できません。完了してから e・E を押してください。"
+			a.text = "生成中は解説を生成できません。完了してから E を押してください。"
 			s.explanationTop = 0
 			return true
 		}
-		if key == "e" {
-			if a.input == nil {
-				a.input = &agentInput{id: s.current}
-			}
-		} else {
-			s.startAgent(ctx, s.current, "表示中の関数の解説を生成してください。")
+		s.startAgent(ctx, s.current, "表示中の関数の解説を生成してください。")
+	case "i":
+		if !a.visible {
+			return false
+		}
+		if a.cancel != nil {
+			a.focusReply = false
+			a.text = "生成中は追加指示を入力できません。完了してから i を押してください。"
+			s.explanationTop = 0
+			return true
+		}
+		if a.input == nil {
+			a.input = &agentInput{id: s.current}
 		}
 	default:
 		return false
@@ -102,7 +112,7 @@ func (s *screen) startAgent(ctx context.Context, id, question string) {
 		req, err = req.WithConversation(history, question)
 	}
 	if err != nil {
-		a.text = "解説の準備に失敗しました（送信していません）。e:再入力 / E:解説を再生成\n" + err.Error()
+		a.text = "解説の準備に失敗しました（送信していません）。i:再入力 / E:解説を再生成\n" + err.Error()
 		s.explanationTop = 0
 		return
 	}
@@ -128,11 +138,11 @@ func (s *screen) receiveAgentResult() bool {
 		a := s.agent
 		a.cancel = nil
 		if result.err != nil {
-			a.text = "解説に失敗しました。e:再入力 / E:解説を再生成\n対象: " + result.id + "\n" + result.err.Error()
+			a.text = "解説に失敗しました。i:再入力 / E:解説を再生成\n対象: " + result.id + "\n" + result.err.Error()
 		} else {
 			a.history = append(a.history, agentMessage{id: result.id, Message: explain.Message{Role: "assistant", Content: result.text}})
 			a.focusReply = true
-			a.text = "エージェントの解説（回答の根拠を確認してください）\ne:追加質問 / E:解説を生成 / s:構文解説"
+			a.text = "エージェントの解説（回答の根拠を確認してください）\ni:追加質問 / E:解説を生成 / s:構文解説"
 		}
 		a.scroll = 0
 		if a.visible {
@@ -175,7 +185,7 @@ func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) 
 	}
 	text := s.agent.text
 	if text == "" {
-		text = fmt.Sprintf("エージェント解説\n%s\ne:追加指示 / E:解説を生成 / s:構文解説", s.current)
+		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / E:解説を生成 / s:構文解説", s.current)
 	}
 	lines := wrapPaneText(text, width)
 	spans := make([][]syntaxHighlight, len(lines))

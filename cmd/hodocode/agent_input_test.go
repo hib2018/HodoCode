@@ -30,12 +30,14 @@ func TestAgentInputHistoryAndEnterSend(t *testing.T) {
 		}
 		return "PREVIOUS_MODEL_ANSWER", nil
 	})
+	agentTestKey(t, s, "e")
 	id := s.current
 	for _, instruction := range []string{"日本語で説明してq", "呼び出し元も説明して"} {
 		agentTestKey(t, s, "s") // Follow-up from syntax view must still send the prior conversation.
 		agentTestKey(t, s, "e")
+		agentTestKey(t, s, "i")
 		if s.agent.input == nil || s.agent.input.id != id || s.agent.cancel != nil {
-			t.Fatal("e did not open input without starting generation")
+			t.Fatal("i did not open input without starting generation")
 		}
 		typeAgentInput(t, s, instruction)
 		typeAgentInput(t, s, "\r")
@@ -70,7 +72,7 @@ func TestAgentInputHistoryAndEnterSend(t *testing.T) {
 	if other == id || len(s.agent.history) != 4 || strings.Count(strings.Join(s.paneLines(100, 10), "\n"), "PREVIOUS_MODEL_ANSWER") != 2 {
 		t.Fatal("navigation did not preserve shared conversation")
 	}
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	if s.agent.input.id != other {
 		t.Fatal("popup did not target the newly selected function")
 	}
@@ -115,11 +117,12 @@ func TestAgentInputHistoryAndEnterSend(t *testing.T) {
 
 func TestAgentInputEditingAndCancel(t *testing.T) {
 	s := agentTestScreen(t, nil)
+	agentTestKey(t, s, "e")
 	if s.agentInputByte(context.Background(), 'q') || s.agentInputIdle() || s.renderAgentInput(80, 24) != "" {
 		t.Fatal("closed input handled a byte or rendered")
 	}
 	s.agent.text = "EXISTING_CHAT"
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "日q本\x7f")
 	if s.agent.input.text != "日q" || !utf8.ValidString(s.agent.input.text) {
 		t.Fatalf("UTF-8 backspace: %q", s.agent.input.text)
@@ -137,12 +140,12 @@ func TestAgentInputEditingAndCancel(t *testing.T) {
 		t.Fatal("Escape did not cancel without mutation")
 	}
 	for _, b := range []byte{3, 4} {
-		agentTestKey(t, s, "e")
+		agentTestKey(t, s, "i")
 		if s.agentInputByte(context.Background(), b) || s.agent.input != nil {
 			t.Fatal("Ctrl+C/D did not close and pass through")
 		}
 	}
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "\x1b[A\x1b[5~q")
 	if s.agent.input.text != "q" || s.agentInputIdle() {
 		t.Fatal("terminal escape sequences entered the draft")
@@ -157,8 +160,9 @@ func TestAgentInputSizeBounds(t *testing.T) {
 		}
 		return "ANSWER", nil
 	})
-	id := s.current
 	agentTestKey(t, s, "e")
+	id := s.current
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, strings.Repeat("x", maxAgentPurpose+1))
 	if len(s.agent.input.text) != maxAgentPurpose || s.agent.input.status == "" || len(s.agent.history) != 0 {
 		t.Fatal("draft size bound failed")
@@ -170,7 +174,7 @@ func TestAgentInputSizeBounds(t *testing.T) {
 	if result := agentTestResult(t, s); result.err != nil {
 		t.Fatal(result.err)
 	}
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "日\r")
 	if s.agent.input != nil || len(s.agent.history) != 3 || s.agent.history[2].Content != "日" {
 		t.Fatal("new question was accumulated instead of sent independently")
@@ -178,7 +182,7 @@ func TestAgentInputSizeBounds(t *testing.T) {
 	if result := agentTestResult(t, s); result.err != nil {
 		t.Fatal(result.err)
 	}
-	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	typeAgentInput(t, s, "\x15"+strings.Repeat("日", maxAgentPurpose/3+1))
 	if len(s.agent.input.text) > maxAgentPurpose || !utf8.ValidString(s.agent.input.text) || s.agent.input.status == "" {
 		t.Fatal("draft byte limit corrupted UTF-8 or was exceeded")
@@ -187,11 +191,61 @@ func TestAgentInputSizeBounds(t *testing.T) {
 
 func TestAgentInputGenerationBlocked(t *testing.T) {
 	s := agentTestScreen(t, nil)
+	agentTestKey(t, s, "e")
 	_, cancel := context.WithCancel(context.Background())
 	s.agent.cancel = cancel
-	agentTestKey(t, s, "e")
-	if s.agent.input != nil || !s.agent.visible || !strings.Contains(s.agent.text, "生成中は追加指示を入力できません") {
+	agentTestKey(t, s, "i")
+	if s.agent.input != nil || !s.agent.visible || !strings.Contains(s.agent.text, "生成中は追加指示を入力できません。完了してから i を押してください。") {
 		t.Fatal("generation did not block input with visible status")
+	}
+}
+
+func TestAgentViewOnlyScreenLoop(t *testing.T) {
+	for _, generating := range []bool{false, true} {
+		name := "idle"
+		if generating {
+			name = "generating"
+		}
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			s := agentTestScreen(t, func(context.Context, string) (string, error) {
+				calls.Add(1)
+				return "", nil
+			})
+			s.agent.results <- agentResult{id: s.current, text: "EXISTING_ANSWER"}
+			s.receiveAgentResult()
+			s.agent.focusReply = false
+			status := strings.Repeat("EXISTING_STATUS\n", 30)
+			if generating {
+				_, cancel := context.WithCancel(context.Background())
+				s.agent.cancel = cancel
+				status = "エージェントが解説を生成中です。\n" + status
+			}
+			s.agent.text = status
+			s.agent.scroll = 4
+			input := []byte("ieesssieeeq")
+			var out bytes.Buffer
+			read := func() (byte, bool, error) {
+				if s.agent.input != nil || s.agent.text != status || len(s.agent.history) != 1 || s.agent.history[0].Content != "EXISTING_ANSWER" || calls.Load() != 0 {
+					t.Fatal("view keys opened input, transmitted, or changed the conversation/status")
+				}
+				if s.agent.visible && s.explanationTop != 4 {
+					t.Fatal("view keys lost agent scrolling")
+				}
+				if len(input) == 0 {
+					t.Fatal("view keys consumed quit as input")
+				}
+				b := input[0]
+				input = input[1:]
+				return b, true, nil
+			}
+			if err := screenLoop(context.Background(), s, &out, read, func() (int, int, error) { return 120, 24, nil }, false); err != nil {
+				t.Fatal(err)
+			}
+			if len(input) != 0 || !s.agent.visible || calls.Load() != 0 || strings.Contains(out.String(), "Enterでfxへ送信します") {
+				t.Fatal("view-only screen loop opened a popup or sent a request")
+			}
+		})
 	}
 }
 
@@ -203,7 +257,7 @@ func TestAgentInputScreenLoop(t *testing.T) {
 			return "", nil
 		})
 		s.agent.options.excludes = []string{"main.go"}
-		input := []byte("e日本語q")
+		input := []byte("ei日本語q")
 		if cancel {
 			input = append(input, '\x1b', 0, 'q')
 		} else {
@@ -244,6 +298,7 @@ func TestAgentInputScreenLoop(t *testing.T) {
 func TestRenderAgentInput(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	empty := s.renderAgentInput(100, 24)
 	if !strings.Contains(empty, "› 指示を入力してください…") {
 		t.Fatal("missing entry placeholder")
@@ -282,6 +337,7 @@ func TestRenderAgentInput(t *testing.T) {
 func TestRenderAgentInputLayoutBounds(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	s.agent.input.id = "example.com/" + strings.Repeat("非常に長いパッケージ/", 20) + "日本語.対象関数\x1b[2J\n\t\u202e"
 	s.agent.input.status = "エラー\x1b[2J\r\u202e" + strings.Repeat("長い説明", 40)
 	cursor := regexp.MustCompile(`\x1b\[(\d+);(\d+)H`)
@@ -332,6 +388,7 @@ func TestRenderAgentInputNoColor(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "e")
+	agentTestKey(t, s, "i")
 	for _, output := range []string{s.renderAgentInput(100, 24), s.renderAgentInput(100, 24, false)} {
 		if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(output) {
 			t.Fatal("default/NO_COLOR rendering contains color escapes")
@@ -359,6 +416,7 @@ func TestRenderAgentInputCursorPosition(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := agentTestScreen(t, nil)
 			agentTestKey(t, s, "e")
+			agentTestKey(t, s, "i")
 			typeAgentInput(t, s, tc.text)
 			for _, color := range []bool{false, true} {
 				output := s.renderAgentInput(tc.width, tc.height, color)

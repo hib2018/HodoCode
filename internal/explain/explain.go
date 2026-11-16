@@ -64,13 +64,14 @@ type source struct {
 // Request owns an immutable snapshot; Explain never reads source files.
 // Its zero value is not a prepared request.
 type Request struct {
-	target     string
-	purpose    string
-	history    []Message
-	question   string
-	candidates []candidate
-	snippets   map[string]string
-	graph      []link
+	target       string
+	purpose      string
+	history      []Message
+	question     string
+	lineComments bool
+	candidates   []candidate
+	snippets     map[string]string
+	graph        []link
 }
 
 // Prepare snapshots sanitized functions and requires an exact, allowed target ID.
@@ -218,6 +219,7 @@ func Prepare(p *analyze.Project, target, purpose string, edges []analyze.Edge, e
 
 // WithConversation returns an independent snapshot, preserving the original purpose.
 // History is replaced, not appended; question is the current follow-up question.
+// Answers default to plain text; call WithLineComments afterward to opt in again.
 func (r *Request) WithConversation(history []Message, question string) (*Request, error) {
 	if r == nil || r.target == "" || len(r.candidates) == 0 {
 		return nil, fmt.Errorf("prepared request required")
@@ -233,19 +235,26 @@ func (r *Request) WithConversation(history []Message, question string) (*Request
 			return nil, fmt.Errorf("history requires user/assistant roles and nonempty content")
 		}
 	}
-	next := *r
+	next := r.clone()
 	next.history = append([]Message(nil), history...)
 	next.question = question
+	next.lineComments = false
+	if err := next.preflight(); err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+func (r *Request) clone() *Request {
+	next := *r
+	next.history = append([]Message(nil), r.history...)
 	next.candidates = append([]candidate(nil), r.candidates...)
 	next.graph = append([]link(nil), r.graph...)
 	next.snippets = make(map[string]string, len(r.snippets))
 	for id, snippet := range r.snippets {
 		next.snippets[id] = snippet
 	}
-	if err := next.preflight(); err != nil {
-		return nil, err
-	}
-	return &next, nil
+	return &next
 }
 
 type snapshot struct {
@@ -473,7 +482,11 @@ func (r *Request) answerPrompt(sources []source, graph []link) (string, error) {
 	if r.question != "" {
 		task = "日本語のみで現在の question にだけ回答してください。history は参照先や文脈の解決に使い、明示的に求められない限り説明全体の改訂・再掲はしないでください。"
 	}
-	return instructions + task + "事実と推論を明確に分け、file:line を引用してください。スニペットの先頭行は line、空白化された文字列・ルーン・コメントは不明です。実行や追加取得は禁止です。\nUNTRUSTED DATA:\n" + string(data), nil
+	format := "事実と推論を明確に分け、file:line を引用してください。"
+	if r.lineComments {
+		format = "事実と推論を明確に分けてください。" + lineInstructions
+	}
+	return instructions + task + format + "スニペットの先頭行は line、空白化された文字列・ルーン・コメントは不明です。実行や追加取得は禁止です。\nUNTRUSTED DATA:\n" + string(data), nil
 }
 
 // Bound every possible selection by its largest JSON sources and the full graph.

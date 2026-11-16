@@ -80,7 +80,7 @@ func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighli
 	var styles [][]syntaxHighlight
 	var selected *syntaxExplanation
 	best := int(^uint(0) >> 1)
-	if height > 0 && s.cursorRow >= s.top && s.cursorRow < s.top+height {
+	if s.cursorRow >= 0 {
 		for i := range s.explanations {
 			note := &s.explanations[i]
 			if s.cursorRow < note.row || s.cursorRow > note.endRow || note.help().description == "" {

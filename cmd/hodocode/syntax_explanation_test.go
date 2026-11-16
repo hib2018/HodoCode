@@ -127,7 +127,7 @@ func TestSyntaxExplanationCursor(t *testing.T) {
 		t.Fatal(got)
 	}
 	s.top = 1
-	if got := strings.Join(s.explanationLines(200, 10), ""); !strings.Contains(got, "解説対象の構文はありません") {
+	if got := strings.Join(s.explanationLines(200, 10), "\n"); !strings.Contains(got, "\n+\n") {
 		t.Fatal(got)
 	}
 }
@@ -215,8 +215,9 @@ func TestSyntaxExplanationPane(t *testing.T) {
 	if s.explanationTop != max(0, len(notes)-6) {
 		t.Fatal("explanation did not scroll back")
 	}
+	before := strings.Join(s.explanationLines(40, 5), "\n")
 	s.top = len(s.code)
-	if got := strings.Join(s.explanationLines(40, 5), ""); !strings.Contains(got, "解説対象の構文はありません") {
-		t.Fatal(got)
+	if got := strings.Join(s.explanationLines(40, 5), "\n"); got != before {
+		t.Fatal("scrolling code changed the explanation")
 	}
 }

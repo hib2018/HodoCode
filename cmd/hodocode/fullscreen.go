@@ -604,6 +604,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 	}()
 	decoder := keyDecoder{}
+	mouse := mouseDecoder{}
 	lastWidth, lastHeight := 0, 0
 	dirty := true
 	for {
@@ -618,7 +619,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			return err
 		}
 		if width != lastWidth || height != lastHeight {
-			if height >= 8 && width >= 41 && (s.tree == nil || !s.tree.visible) {
+			if lastWidth == 0 && height >= 8 && width >= 41 && (s.tree == nil || !s.tree.visible) {
 				s.followCursor(height-3, screenCodeWidth(width))
 			}
 			dirty = true
@@ -626,7 +627,9 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if dirty {
 			frame := "\x1b[?25l" + s.render(width, height, bold)
-			if width >= 41 && height >= 8 && (s.tree == nil || !s.tree.visible) {
+			if width >= 41 && height >= 8 && (s.tree == nil || !s.tree.visible) &&
+				s.cursorRow >= s.top && s.cursorRow < s.top+height-3 &&
+				s.cursorCell() >= s.horizontal && s.cursorCell() < s.horizontal+screenCodeWidth(width) {
 				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", s.cursorRow-s.top+2, s.cursorCell()-s.horizontal+1)
 			}
 			if s.search.input != nil && width >= 41 && height >= 8 {
@@ -649,6 +652,19 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			return err
 		}
 		if !ok {
+			if mouse.pending == "\x1b" {
+				mouse.pending = ""
+				if !s.searchInputByte(0x1b, max(1, height-3), max(1, screenCodeWidth(width))) && !s.agentInputByte(ctx, 0x1b) {
+					decoder.feed(0x1b)
+				}
+			} else if mouse.pending != "" {
+				// Allow split reports, but recover from a lost/truncated report after 1s.
+				mouse.timeouts++
+				if mouse.timeouts >= 10 {
+					mouse = mouseDecoder{}
+				}
+				continue
+			}
 			if decoder.escape == "\x1b" && s.search.query != "" {
 				s.search = codeSearch{}
 				dirty = true
@@ -666,35 +682,41 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			}
 			continue
 		}
-		if s.searchInputByte(b, max(1, height-3), max(1, screenCodeWidth(width))) {
-			dirty = true
-			continue
+		text, event := mouse.feed(b)
+		if event != nil {
+			dirty = s.handleMouse(*event, width, height) || dirty
 		}
-		if s.agentInputByte(ctx, b) {
-			dirty = true
-			continue
-		}
-		key := decoder.feed(b)
-		if key == "" {
-			continue
-		}
-		if width < 41 || height < 8 {
-			if s.search.query == "" && (key == "q" || key == "\x03" || key == "\x04") {
+		for _, b := range []byte(text) {
+			if s.searchInputByte(b, max(1, height-3), max(1, screenCodeWidth(width))) {
+				dirty = true
+				continue
+			}
+			if s.agentInputByte(ctx, b) {
+				dirty = true
+				continue
+			}
+			key := decoder.feed(b)
+			if key == "" {
+				continue
+			}
+			if width < 41 || height < 8 {
+				if s.search.query == "" && (key == "q" || key == "\x03" || key == "\x04") {
+					return nil
+				}
+				continue
+			}
+			if s.search.query == "" && s.search.input == nil && (s.tree == nil || !s.tree.visible) && s.agentKey(ctx, key) {
+				dirty = true
+				continue
+			}
+			done, err := s.key(key, height-3, screenCodeWidth(width))
+			if err != nil {
+				return err
+			}
+			if done {
 				return nil
 			}
-			continue
-		}
-		if s.search.query == "" && s.search.input == nil && (s.tree == nil || !s.tree.visible) && s.agentKey(ctx, key) {
 			dirty = true
-			continue
 		}
-		done, err := s.key(key, height-3, screenCodeWidth(width))
-		if err != nil {
-			return err
-		}
-		if done {
-			return nil
-		}
-		dirty = true
 	}
 }

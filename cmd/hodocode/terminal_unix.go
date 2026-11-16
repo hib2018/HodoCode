@@ -53,11 +53,11 @@ func withTerminal(in, out *os.File, run func(read func() (byte, bool, error), si
 
 	// Register cleanup before entry: even a failed write may have changed the screen.
 	defer func() {
-		if _, restoreErr := io.WriteString(out, "\x1b[?25h\x1b[?1049l"); restoreErr != nil {
+		if _, restoreErr := io.WriteString(out, "\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l"); restoreErr != nil {
 			err = errors.Join(err, fmt.Errorf("restore terminal screen: %w", restoreErr))
 		}
 	}()
-	if _, err = io.WriteString(out, "\x1b[?1049h\x1b[?25l"); err != nil {
+	if _, err = io.WriteString(out, "\x1b[?1049h\x1b[?1006h\x1b[?1000h\x1b[?25l"); err != nil {
 		return fmt.Errorf("enter terminal screen: %w", err)
 	}
 

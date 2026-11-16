@@ -13,8 +13,8 @@ import (
 	"unsafe"
 )
 
-const terminalScreenEnter = "\x1b[?1049h\x1b[?25l"
-const terminalScreenLeave = "\x1b[?25h\x1b[?1049l"
+const terminalScreenEnter = "\x1b[?1049h\x1b[?1006h\x1b[?1000h\x1b[?25l"
+const terminalScreenLeave = "\x1b[?1000l\x1b[?1006l\x1b[?25h\x1b[?1049l"
 
 func terminalPTY(t *testing.T) (master, in, out *os.File) {
 	t.Helper()

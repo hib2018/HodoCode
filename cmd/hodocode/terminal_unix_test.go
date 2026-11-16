@@ -157,7 +157,7 @@ func TestTerminalRawReadAndSize(t *testing.T) {
 }
 
 func TestTerminalRestoration(t *testing.T) {
-	for _, mode := range []string{"normal", "error", "panic", "entry failure", "screen cleanup failure", "termios cleanup failure"} {
+	for _, mode := range []string{"normal", "error", "errOpenNeovim", "panic", "entry failure", "screen cleanup failure", "termios cleanup failure"} {
 		t.Run(mode, func(t *testing.T) {
 			master, in, out := terminalPTY(t)
 			original := terminalAttributes(t, in)
@@ -182,6 +182,8 @@ func TestTerminalRestoration(t *testing.T) {
 						panic(sentinel)
 					case "error":
 						return sentinel
+					case "errOpenNeovim":
+						return errOpenNeovim
 					case "screen cleanup failure":
 						out.Close()
 						return sentinel
@@ -207,6 +209,10 @@ func TestTerminalRestoration(t *testing.T) {
 			case "error":
 				if !errors.Is(err, sentinel) {
 					t.Errorf("callback error lost: %v", err)
+				}
+			case "errOpenNeovim":
+				if err != errOpenNeovim {
+					t.Errorf("Neovim handoff error = %v, want %v", err, errOpenNeovim)
 				}
 			case "entry failure":
 				if called || err == nil || !strings.Contains(err.Error(), "enter terminal screen") || !strings.Contains(err.Error(), "restore terminal screen") {

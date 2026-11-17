@@ -47,9 +47,9 @@ func (s *screen) reload(height, width int) error {
 		for range strings.Split(s.p.RepositorySubdir, "/") {
 			root = filepath.Dir(root)
 		}
-		p, err = analyze.LoadSubdir(root, s.p.RepositorySubdir)
+		p, err = analyze.LoadSubdirLanguage(root, s.p.RepositorySubdir, s.p.Language)
 	} else {
-		p, err = analyze.Load(s.p.Root)
+		p, err = analyze.LoadLanguage(s.p.Root, s.p.Language)
 	}
 	if err != nil {
 		return err

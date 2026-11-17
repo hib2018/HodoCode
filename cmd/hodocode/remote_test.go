@@ -27,6 +27,7 @@ func mockGitHub(t *testing.T) *int {
 		{"snapshot/sub/sub.go", "package sub\nfunc Child() {}\n"},
 		{"snapshot/nested/go.mod", "module example.com/nested\n\ngo 1.23\n"},
 		{"snapshot/nested/main.go", "package nested\nfunc Other() {}\n"},
+		{"snapshot/python/app.py", "def entry():\n    return 'MASK_ME'\n"},
 	}
 	for _, f := range files {
 		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: 0600, Size: int64(len(f.text)), Typeflag: tar.TypeReg}); err != nil {
@@ -75,6 +76,9 @@ func TestRemoteCommands(t *testing.T) {
 		{"tui", []string{"--func", "Hello"}, "/main.go#L2-L2"},
 		{"explain", []string{"--func", "Hello", "--purpose", "test"}, "/main.go#L2-L2"},
 		{"functions", []string{"--subdir", "sub"}, "example.com/remote/sub.Child"},
+		{"functions", []string{"--subdir", "python", "--language", "python"}, "app.py.entry"},
+		{"flow", []string{"--subdir", "python", "--language", "python", "--func", "entry"}, "/python/app.py#L1-L2"},
+		{"explain", []string{"--subdir", "python", "--language", "python", "--func", "entry", "--purpose", "test"}, "/python/app.py#L1-L2"},
 	} {
 		t.Run(tc.command+strings.Join(tc.flags, ""), func(t *testing.T) {
 			args := append([]string{tc.command, "--repo", "https://github.com/owner/repo", "--cache-dir", cache}, tc.flags...)

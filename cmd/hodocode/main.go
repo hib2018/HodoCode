@@ -34,7 +34,7 @@ func (s *list) Set(v string) error { *s = append(*s, v); return nil }
 
 func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer, runner explain.Runner) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(out, "Usage: hodocode <deps|functions|flow|tui|explain|cache> [flags]\nCommon: --root PATH (local) or --repo https://github.com/owner/repo [--ref REF] [--subdir PATH] [--private]\nRemote: --fetch-timeout 2m --max-bytes 104857600 --cache-dir PATH --refresh\ncache: --repo URL --delete [--cache-dir PATH]\nRemote acquisition and static analysis never send code to AI.\ndeps: --dir . --depth -1 (source directory depth)\nflow/tui: --func NAME [--expand NAME ...]\nexplain: --func NAME --purpose TEXT [--exclude PATTERN ...] [--send] [--timeout 2m]\nexplain defaults to a local preview; --send invokes fx twice. Run a command with --help for flags.")
+		_, err := fmt.Fprintln(out, "Usage: hodocode <deps|functions|flow|tui|explain|cache> [flags]\nCommon: --language auto|go|zig|ts|rust|c|js|python --root PATH (local) or --repo https://github.com/owner/repo [--ref REF] [--subdir PATH] [--private]\nRemote: --fetch-timeout 2m --max-bytes 104857600 --cache-dir PATH --refresh\ncache: --repo URL --delete [--cache-dir PATH]\nRemote acquisition and static analysis never send code to AI.\ndeps: --dir . --depth -1 (source directory depth)\nflow/tui: --func NAME [--expand NAME ...]\nexplain: --func NAME --purpose TEXT [--exclude PATTERN ...] [--send] [--timeout 2m]\nexplain defaults to a local preview; --send invokes fx twice. Run a command with --help for flags.")
 		return err
 	}
 	command := args[0]
@@ -45,7 +45,8 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	root := fs.String("root", ".", "repository or Go module root; includes nested modules")
+	root := fs.String("root", ".", "repository root; includes nested Go modules")
+	language := fs.String("language", "auto", "auto, go, zig, typescript (ts), rust, c, javascript (js), python")
 	repo := fs.String("repo", "", "GitHub repository HTTPS URL (static analysis does not send code to AI)")
 	ref := fs.String("ref", "", "branch, tag or commit (default: repository default branch)")
 	subdir := fs.String("subdir", ".", "analysis directory inside the fetched repository")
@@ -124,7 +125,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	var p *analyze.Project
 	var err error
 	if *repo == "" {
-		p, err = analyze.Load(*root)
+		p, err = analyze.LoadLanguage(*root, *language)
 	} else {
 		if *fetchTimeout <= 0 || *maxBytes <= 0 {
 			return fmt.Errorf("--fetch-timeout and --max-bytes must be positive")
@@ -136,10 +137,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		if fetchErr != nil {
 			return fetchErr
 		}
-		p, err = analyze.LoadSubdir(snapshot.Root, *subdir)
-		if err != nil && strings.Contains(err.Error(), "no go.mod found") {
-			return fmt.Errorf("GitHub analysis currently supports Go repositories only: select a directory containing go.mod (or beneath a repository module): %w", err)
-		}
+		p, err = analyze.LoadSubdirLanguage(snapshot.Root, *subdir, *language)
 		if err == nil {
 			p.RepositoryURL, p.CommitSHA = snapshot.URL, snapshot.SHA
 		}

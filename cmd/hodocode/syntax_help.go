@@ -944,6 +944,9 @@ var syntaxTopics = map[string]syntaxHelp{
 }
 
 func (note syntaxExplanation) help() syntaxHelp {
+	if strings.HasPrefix(note.topic, "language:") {
+		return languageHelp(note)
+	}
 	if note.topic == "identifier" {
 		return syntaxDescriptions[token.IDENT]
 	}

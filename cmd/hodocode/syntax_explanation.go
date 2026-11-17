@@ -112,7 +112,7 @@ func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighli
 		help := selected.help()
 		// Quote literals so embedded newlines and tabs cannot disrupt the pane.
 		label := selected.literal
-		if selected.token.IsLiteral() || selected.token == token.IDENT {
+		if selected.token.IsLiteral() || selected.token == token.IDENT || strings.HasSuffix(selected.topic, ":string") || strings.HasSuffix(selected.topic, ":identifier") {
 			label = fmt.Sprintf("%q", label)
 		}
 		texts = []string{
@@ -152,7 +152,7 @@ func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighli
 			for _, snippet := range definition.Snippets {
 				prefix = append(prefix, snippet.File, "")
 				source := strings.ReplaceAll(snippet.Source, "\t", "    ")
-				highlights := sourceHighlights(source, snippet.Line)
+				highlights := languageHighlights(s.p.FunctionLanguage(s.current), source, snippet.Line)
 				for row, raw := range strings.Split(source, "\n") {
 					textStyles[len(prefix)] = highlights[row]
 					prefix = append(prefix, fmt.Sprintf("%d │ %s", snippet.Line+row, strings.TrimSuffix(raw, "\r")))

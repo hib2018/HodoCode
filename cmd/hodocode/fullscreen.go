@@ -91,7 +91,8 @@ func (s *screen) refresh() error {
 	}
 	s.code = nil
 	s.sourceOffsets = nil
-	s.syntax = sourceHighlights(source, fn.Line)
+	language := s.p.FunctionLanguage(s.current)
+	s.syntax = languageHighlights(language, source, fn.Line)
 	symbols := map[int]string{}
 	for _, site := range s.sites {
 		symbols[site.Offset] = "identifier"
@@ -99,7 +100,7 @@ func (s *screen) refresh() error {
 			symbols[site.Offset] = "standard:" + site.To
 		}
 	}
-	s.explanations = sourceExplanations(source, symbols)
+	s.explanations = languageExplanations(language, source, symbols)
 	s.definitions, err = s.p.Definitions(s.current)
 	if err != nil {
 		return err

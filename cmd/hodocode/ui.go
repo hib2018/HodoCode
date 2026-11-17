@@ -13,6 +13,9 @@ func (s *screen) paneTitle() string {
 	if s.agent == nil || !s.agent.visible {
 		return "構文の解説 · LOCAL"
 	}
+	if s.agent.lineReview {
+		return "行質問 · 下書きと回答"
+	}
 	if s.agent.cancel != nil {
 		return "AGENT  解説を生成中"
 	}
@@ -24,9 +27,9 @@ func screenHelp(width int) string {
 		return " /検索 ^N/P v:nvim r:再読 E 解説 q 終了"
 	}
 	if width < 180 {
-		return " hjkl /検索 ^N/P v:nvim r:再読 e 表示 i 入力 E 解説 s 構文 t 階層 q 終了"
+		return " /検索 ^N/P v:nvim r:再読 e 表示 i 入力 E 解説 s 構文 a/C質問 q 終了"
 	}
-	return " hjkl 移動 w/B 単語 g/G 先頭末尾 n/N 呼出 /検索 ^N/P次前 Enter 進む b 戻る t 階層 v:nvim r:再読 c 行解説 e 表示 i 入力 E 解説 s 構文 [] 解説 q 終了"
+	return " a/C 質問 w/B 単語 g/G 先頭末尾 n/N 呼出 /検索 ^N/P次前 Enter 進む b 戻る t 階層 v:nvim r:再読 c 行解説 e 表示 i 入力 E 解説 s 構文 [] 解説 q 終了"
 }
 
 func uiBar(left, right string, width int) string {

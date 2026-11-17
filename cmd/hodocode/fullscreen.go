@@ -449,6 +449,9 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		status = s.notice
 	}
 	mode := " NORMAL  "
+	if s.agent != nil && s.agent.lineReview {
+		mode = " QUESTIONS "
+	}
 	if s.agent != nil && s.agent.input != nil {
 		mode = " INPUT   "
 	}
@@ -690,6 +693,10 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 					mouse = mouseDecoder{}
 				}
 				continue
+			}
+			if decoder.escape == "\x1b" && s.agent != nil && s.agent.lineReview {
+				s.agent.lineReview = false
+				dirty = true
 			}
 			if decoder.escape == "\x1b" && s.search.query != "" {
 				s.search = codeSearch{}

@@ -13,6 +13,10 @@ type inlineDisplayRow struct {
 }
 
 func makeInlineDisplay(code []string, comments map[int][]string, width int) []inlineDisplayRow {
+	return makeQuestionDisplay(code, comments, nil, width)
+}
+
+func makeQuestionDisplay(code []string, comments, questions map[int][]string, width int) []inlineDisplayRow {
 	var rows []inlineDisplayRow
 	for row := range code {
 		rows = append(rows, inlineDisplayRow{codeRow: row})
@@ -21,11 +25,20 @@ func makeInlineDisplay(code []string, comments map[int][]string, width int) []in
 				rows = append(rows, inlineDisplayRow{codeRow: row, comment: true, text: line})
 			}
 		}
+		if len(questions[row]) > 0 {
+			for _, line := range inlineCommentBlock(code[row], questions[row], width, "行質問") {
+				rows = append(rows, inlineDisplayRow{codeRow: row, comment: true, text: line})
+			}
+		}
 	}
 	return rows
 }
 
-func inlineCommentBlock(code string, comments []string, width int) []string {
+func inlineCommentBlock(code string, comments []string, width int, labels ...string) []string {
+	label := "AI解説"
+	if len(labels) > 0 {
+		label = labels[0]
+	}
 	prefix, _, numbered := strings.Cut(code, " │ ")
 	gutter := 0
 	if numbered {
@@ -44,7 +57,7 @@ func inlineCommentBlock(code string, comments []string, width int) []string {
 	appendLine := func(text string) {
 		lines = append(lines, indent+displaySlice(text, 0, min(max(0, width-len(indent)), frameWidth)))
 	}
-	appendLine("╭─ AI解説 " + strings.Repeat("─", max(0, frameWidth-11)) + "╮")
+	appendLine("╭─ " + label + " " + strings.Repeat("─", max(0, frameWidth-11)) + "╮")
 	for _, raw := range paragraphs {
 		line, cells := "", 0
 		for _, r := range raw {
@@ -63,7 +76,7 @@ func inlineCommentBlock(code string, comments []string, width int) []string {
 }
 
 func (s *screen) displayRows(width int) []inlineDisplayRow {
-	rows := makeInlineDisplay(s.code, s.inlineComments(), width)
+	rows := makeQuestionDisplay(s.code, s.inlineComments(), s.questionComments(), width)
 	// Preserve the viewport's source anchor when comments toggle or rewrap.
 	if s.displayFunction == s.current && !slices.Equal(s.display, rows) && len(s.display) > 0 {
 		old := max(0, min(s.top, len(s.display)-1))

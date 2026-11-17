@@ -11,6 +11,9 @@ import (
 const maxAgentPurpose = 8 * 1024
 
 type agentInput struct {
+	draft                             *lineDraft
+	lineSnapshot                      commentSnapshot
+	line                              int
 	id, text, partial, escape, status string
 }
 
@@ -46,6 +49,10 @@ func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 			return true
 		}
 		a.input = nil
+		if in.line > 0 {
+			s.saveLineQuestion(in)
+			return true
+		}
 		if instruction == "/comments" {
 			in.status = "/comments の後にコメントの修正指示を入力してください。"
 			a.input = in
@@ -110,6 +117,9 @@ func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
 	if slash := strings.LastIndex(target, "/"); slash >= 0 {
 		target = target[slash+1:]
 	}
+	if in.line > 0 {
+		target = fmt.Sprintf("%s:%d", in.lineSnapshot.file, in.line)
+	}
 	target = "対象: " + target
 	if displayWidth(target) > inner {
 		target = displaySlice(target, 0, inner-1) + "…"
@@ -135,15 +145,26 @@ func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
 	if in.status != "" {
 		status = "! " + in.status
 	}
-	const safety = "Enterでfxへ送信します"
-	const footer = "Enter:送信  Esc:取消  Ctrl+U:消去"
+	safety := "Enterでfxへ送信します"
+	footer := "Enter:送信  Esc:取消  Ctrl+U:消去"
+	title := "追加指示"
+	code := ""
+	if in.line > 0 {
+		title = "行質問 · 下書き"
+		safety, footer = "保存だけでは送信しません · Cで一覧・送信", "Enter:保存  Esc:取消  Ctrl+U:消去"
+		source := strings.Split(in.lineSnapshot.source, "\n")
+		row := in.line - in.lineSnapshot.line
+		if row >= 0 && row < len(source) {
+			code = source[row]
+		}
+	}
 	cursorRow := 4 + cursorLine
-	lines := []string{"追加指示", target, ""}
+	lines := []string{title, target, code}
 	lines = append(lines, text...)
 	lines = append(lines, status, safety, footer)
 	if height < 11 {
 		// Keep the entry and controls useful when the full panel cannot fit.
-		lines = []string{"追加指示", text[cursorLine]}
+		lines = []string{title, text[cursorLine]}
 		cursorRow = 2
 		if status != "" {
 			lines = append(lines, status)

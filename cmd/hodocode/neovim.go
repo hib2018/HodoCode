@@ -116,12 +116,32 @@ func (s *screen) reload(height, width int) error {
 		next.agent.commentsHidden = s.agent.commentsHidden
 		next.agent.comments = s.agent.comments
 		next.agent.revalidateComments(p)
+		next.agent.questions = s.agent.questions
+		next.agent.questionSerial = s.agent.questionSerial
+		next.agent.lineReview = s.agent.lineReview
+		next.agent.questionIndex = s.agent.questionIndex
+		for _, d := range next.agent.questions {
+			snapshot, err := snapshotComments(p, d.function)
+			d.stale = d.stale || err != nil || snapshot != d.snapshot
+			if d.sending {
+				d.sending = false
+				d.status = "再読込で中断・Enterで再送可"
+			}
+		}
 		if next.agent.comments[current].stale {
 			next.explanationTop = 0
 		}
 	}
 	next.followCursor(height, width)
 	next.notice = "再読み込みしました"
+	if next.agent != nil {
+		for _, d := range next.agent.questions {
+			if d.stale {
+				next.notice += "。古い行質問があります。Cで位置を確認・再指定してください"
+				break
+			}
+		}
+	}
 	if current != s.current {
 		next.notice += "。表示中の関数がなくなったため " + current + " へ移動しました"
 	}

@@ -19,11 +19,13 @@ type agentOptions struct {
 }
 
 type agentResult struct {
-	id, text string
-	err      error
-	inline   bool
-	comments []explain.LineComment
-	snapshot commentSnapshot
+	questions []explain.LineQuestion
+	answers   map[string]string
+	id, text  string
+	err       error
+	inline    bool
+	comments  []explain.LineComment
+	snapshot  commentSnapshot
 }
 
 type agentMessage struct {
@@ -33,17 +35,20 @@ type agentMessage struct {
 }
 
 type agentPane struct {
-	options        agentOptions
-	visible        bool
-	text           string
-	results        chan agentResult
-	cancel         context.CancelFunc
-	history        []agentMessage
-	focusReply     bool
-	scroll         int
-	input          *agentInput
-	comments       map[string]functionComments
-	commentsHidden bool
+	questions                     []*lineDraft
+	questionSerial, questionIndex int
+	lineReview, questionFocus     bool
+	options                       agentOptions
+	visible                       bool
+	text                          string
+	results                       chan agentResult
+	cancel                        context.CancelFunc
+	history                       []agentMessage
+	focusReply                    bool
+	scroll                        int
+	input                         *agentInput
+	comments                      map[string]functionComments
+	commentsHidden                bool
 }
 
 func newAgentPane(options agentOptions) *agentPane {
@@ -55,6 +60,9 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 	a := s.agent
 	if a == nil {
 		return false
+	}
+	if s.lineQuestionKey(ctx, key) {
+		return true
 	}
 	switch key {
 	case "c":
@@ -168,6 +176,10 @@ func (s *screen) receiveAgentResult() bool {
 	case result := <-s.agent.results:
 		a := s.agent
 		a.cancel = nil
+		if len(result.questions) > 0 {
+			s.receiveLineAnswers(result)
+			return true
+		}
 		if result.err != nil {
 			a.text = "解説に失敗しました。i:再入力 / E:解説を再生成\n対象: " + result.id + "\n" + result.err.Error()
 		} else {
@@ -217,9 +229,12 @@ func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) 
 	if s.agent == nil || !s.agent.visible {
 		return s.explanationLines(width, height), nil
 	}
+	if s.agent.lineReview {
+		return s.questionLines(width, height), nil
+	}
 	text := s.agent.text
 	if text == "" {
-		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / E:解説を生成 / s:構文解説", s.current)
+		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / E:解説を生成 / s:構文解説\na:行質問 / ?:これは何？ / C:質問一覧", s.current)
 	}
 	if s.agent.comments[s.current].stale {
 		text += "\n" + staleCommentsAdvice

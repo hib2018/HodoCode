@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/hib2018/HodoCode/internal/analyze"
+	"github.com/hib2018/HodoCode/internal/sourcelex"
 )
 
 const (
@@ -124,11 +125,15 @@ func Prepare(p *analyze.Project, target, purpose string, edges []analyze.Edge, e
 	total := 0
 	for _, id := range ids {
 		fn := p.Functions[id]
+		language := p.FunctionLanguage(id)
 		if !relative(fn.File) {
 			return nil, fmt.Errorf("invalid function file path")
 		}
 		if blocked(fn.File, excludes) {
 			continue
+		}
+		if language != analyze.FileLanguage(fn.File) {
+			return nil, fmt.Errorf("source language does not match file: %s", fn.File)
 		}
 		if id == "" || fn.ID != id || fn.Line < 1 || fn.End < fn.Line {
 			return nil, fmt.Errorf("invalid function metadata")
@@ -146,13 +151,22 @@ func Prepare(p *analyze.Project, target, purpose string, edges []analyze.Edge, e
 			if blocked(filepath.ToSlash(rel), excludes) {
 				continue
 			}
+			if language != analyze.FileLanguage(resolved) {
+				return nil, fmt.Errorf("source language does not match resolved file: %s", fn.File)
+			}
 			// Resolve and boundary-check before opening. Concurrent filesystem mutation
 			// is outside this snapshot API's threat model (EvalSymlinks is not openat).
 			data, readErr := readSource(resolved)
 			if readErr != nil {
 				return nil, fmt.Errorf("snapshot %s: %w", fn.File, readErr)
 			}
-			clean, redactErr := redact(data)
+			var clean string
+			var redactErr error
+			if language == "go" {
+				clean, redactErr = redact(data)
+			} else {
+				clean, redactErr = sourcelex.Mask(language, string(data))
+			}
 			if redactErr != nil {
 				return nil, fmt.Errorf("redact %s: %w", fn.File, redactErr)
 			}
@@ -160,15 +174,26 @@ func Prepare(p *analyze.Project, target, purpose string, edges []analyze.Edge, e
 			if total > maxSnapshot {
 				return nil, fmt.Errorf("snapshot exceeds %d bytes", maxSnapshot)
 			}
-			fset := token.NewFileSet()
-			parsed, parseErr := parser.ParseFile(fset, "", data, parser.SkipObjectResolution)
-			if parseErr != nil {
-				return nil, fmt.Errorf("parse %s: %w", fn.File, parseErr)
+			file = &snapshot{clean: clean, raw: string(data), language: language, filename: resolved}
+			if language == "go" {
+				file.fset = token.NewFileSet()
+				file.file, err = parser.ParseFile(file.fset, "", data, parser.SkipObjectResolution)
+				if err != nil {
+					return nil, fmt.Errorf("parse %s: %w", fn.File, err)
+				}
 			}
-			file = &snapshot{clean, fset, parsed}
 			files[fn.File] = file
 		}
-		snippet, snippetErr := file.function(fn)
+		if file.language != language {
+			return nil, fmt.Errorf("conflicting source languages: %s", fn.File)
+		}
+		var snippet string
+		var snippetErr error
+		if language == "go" {
+			snippet, snippetErr = file.function(fn)
+		} else {
+			snippet, snippetErr = file.indexedFunction(p, fn)
+		}
 		if snippetErr != nil {
 			return nil, snippetErr
 		}
@@ -261,9 +286,34 @@ func (r *Request) clone() *Request {
 }
 
 type snapshot struct {
-	clean string
-	fset  *token.FileSet
-	file  *ast.File
+	raw, language, filename string
+	clean                   string
+	fset                    *token.FileSet
+	file                    *ast.File
+}
+
+// Compare immutable indexed declaration bytes with the audited disk snapshot before
+// slicing its mask. Line-only slicing could include adjacent declarations or secrets.
+func (s *snapshot) indexedFunction(p *analyze.Project, fn analyze.Function) (string, error) {
+	position, err := p.SourcePosition(fn.ID)
+	if err != nil {
+		return "", err
+	}
+	source, err := p.Source(fn.ID)
+	if err != nil {
+		return "", err
+	}
+	filename, err := filepath.EvalSymlinks(position.Filename)
+	if err != nil {
+		return "", err
+	}
+	start, end := position.Offset, position.Offset+len(source)
+	if filename != s.filename || source == "" || start < 0 || end > len(s.raw) ||
+		s.raw[start:end] != source || fn.Line != 1+strings.Count(s.raw[:start], "\n") ||
+		fn.End != fn.Line+strings.Count(source, "\n") {
+		return "", fmt.Errorf("function metadata does not match snapshot: %s", fn.ID)
+	}
+	return s.clean[start:end], nil
 }
 
 // Exact declaration offsets exclude adjacent declarations even on the same line.

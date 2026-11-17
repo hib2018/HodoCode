@@ -1,9 +1,11 @@
-// Package analyze indexes Go source and lazily inspects one function at a time.
+// Package analyze indexes supported source languages without executing code.
 //
-// All modules physically inside Root are indexed without fetching dependencies.
-// Build constraints follow go/build.Default; _test.go, vendor, hidden
-// directories/files and symlinks are excluded. SDK navigation and restricted
+// Go modules physically inside Root are indexed without fetching dependencies.
+// Go build constraints follow go/build.Default; _test.go, vendor, hidden
+// directories/files and symlinks are excluded. Go SDK navigation and restricted
 // dependency definitions load local source lazily, without builds or downloads.
+// Added languages use conservative lexical/structural indexing and file-local
+// direct-call resolution; unproven and cross-language targets remain unknown.
 package analyze
 
 import (
@@ -27,6 +29,7 @@ import (
 
 type Function struct {
 	ID, File  string
+	Language  string
 	Line, End int
 }
 
@@ -51,6 +54,9 @@ type CallSite struct {
 // Reload after build, module or workspace configuration changes.
 type Project struct {
 	Root string
+	// Language is the requested selection; auto indexes all supported languages.
+	Language string
+	polyglot map[string]polyFunction
 	// Remote snapshot metadata; RepositorySubdir is slash-separated relative to the repository root.
 	RepositoryURL, CommitSHA, RepositorySubdir string
 	// Functions starts with root declarations only. EnsureFunction may add SDK
@@ -69,13 +75,11 @@ type Project struct {
 	importers    map[string]*signatureImporter
 }
 
-// Load records declarations and imports without type-checking function bodies.
-// Root must contain at least one go.mod, possibly in a subdirectory. Only source
-// beneath a go.mod is indexed, using the nearest module's canonical import path.
-// File paths and import sources are slash-separated, relative to Root; method IDs
-// are import/path.Receiver.Method (also for *Receiver).
+// Load automatically indexes supported languages without executing target code.
+// Go source uses the nearest go.mod and retains build-aware canonical import IDs.
+// Other languages require no module manifest and use root-relative file IDs.
 func Load(root string) (*Project, error) {
-	return load(root, "")
+	return LoadLanguage(root, "auto")
 }
 
 func load(root, moduleBoundary string) (*Project, error) {
@@ -227,6 +231,9 @@ func load(root, moduleBoundary string) (*Project, error) {
 // Source returns the original declaration from the indexed snapshot, without
 // reformatting or redaction. It is for local display, never explanation payloads.
 func (p *Project) Source(id string) (string, error) {
+	if _, ok := p.polyglot[id]; ok {
+		return p.polySource(id)
+	}
 	fn, ok := p.declarations[id]
 	if !ok {
 		return "", fmt.Errorf("function %q not found", id)
@@ -242,6 +249,9 @@ func (p *Project) Source(id string) (string, error) {
 // with an absolute filename and a 1-based byte column, ignoring //line directives.
 // SDK declarations must first be registered with EnsureFunction, as with Source.
 func (p *Project) SourcePosition(id string) (token.Position, error) {
+	if _, ok := p.polyglot[id]; ok {
+		return p.polyPosition(id)
+	}
 	fn, ok := p.declarations[id]
 	if !ok {
 		return token.Position{}, fmt.Errorf("function %q not found", id)
@@ -308,9 +318,9 @@ func (p *Project) Calls(id string) ([]Edge, error) {
 	return edges, nil
 }
 
-// MainFunctions returns sorted IDs of receiver-less main functions in package main.
+// MainFunctions returns sorted IDs of top-level main functions (package main in Go).
 func (p *Project) MainFunctions() []string {
-	var ids []string
+	ids := p.polyMainFunctions()
 	for id, fn := range p.declarations {
 		if p.LocalFunction(id) && fn.Recv == nil && fn.Name.Name == "main" && p.packages[p.owners[id]][0].Name.Name == "main" {
 			ids = append(ids, id)
@@ -324,6 +334,9 @@ func (p *Project) MainFunctions() []string {
 // duplicates, external targets and unknowns, but not function literal bodies.
 // Type conversions and builtins are omitted, as in Calls.
 func (p *Project) CallSites(id string) ([]CallSite, error) {
+	if _, ok := p.polyglot[id]; ok {
+		return p.polyCallSites(id)
+	}
 	fn, ok := p.declarations[id]
 	if !ok {
 		return nil, fmt.Errorf("function %q not found", id)

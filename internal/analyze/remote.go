@@ -12,6 +12,11 @@ import (
 // LoadSubdir indexes only subdir, inheriting a module from its repository ancestors.
 // Subdir must be relative and cannot contain traversal or symlink components.
 func LoadSubdir(repositoryRoot, subdir string) (*Project, error) {
+	return LoadSubdirLanguage(repositoryRoot, subdir, "auto")
+}
+
+// LoadSubdirLanguage selects a language within a validated repository subdirectory.
+func LoadSubdirLanguage(repositoryRoot, subdir, language string) (*Project, error) {
 	root, err := filepath.Abs(repositoryRoot)
 	if err != nil {
 		return nil, fmt.Errorf("repository root: %w", err)
@@ -40,7 +45,7 @@ func LoadSubdir(repositoryRoot, subdir string) (*Project, error) {
 			return nil, fmt.Errorf("subdirectory is not a real directory: %s", selected)
 		}
 	}
-	p, err := load(selected, root)
+	p, err := loadPolyglot(selected, root, language)
 	if err != nil {
 		return nil, err
 	}

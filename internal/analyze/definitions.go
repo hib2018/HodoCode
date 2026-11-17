@@ -36,6 +36,9 @@ type DefinitionSource struct {
 // Variable declarations precede any existing slice-element type help.
 // All snippets preserve parsed snapshot bytes and source object positions.
 func (p *Project) Definitions(id string) (map[int]Definition, error) {
+	if _, ok := p.polyglot[id]; ok {
+		return map[int]Definition{}, nil
+	}
 	fn, ok := p.declarations[id]
 	if !ok {
 		return nil, fmt.Errorf("function %q not found", id)

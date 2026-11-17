@@ -126,6 +126,7 @@ func (r *Request) WithLineComments() (*Request, error) {
 	}
 	next := r.clone()
 	next.lineComments = true
+	next.lineQuestions = nil
 	if err := next.preflight(); err != nil {
 		return nil, err
 	}

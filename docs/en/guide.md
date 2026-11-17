@@ -197,3 +197,15 @@ go run ./cmd/hodocode tui --root testdata/analyze --func Recur
 ```
 
 `testdata/analyze` contains imports, calls in branches, cycles, and dynamic calls. It includes intentionally unresolved symbols and is not an executable program. Tests use no external model. Fake fx executables and fixed responses verify transmission scope and error handling.
+
+### Questions on individual lines
+
+On a code line, press `a` to enter a question, then `Enter` to save a draft without sending. The input shows the relative file path, real source line number, and code. Press `?` to draft “これは何？” (“What is this?”).
+
+Press `C` to open/close the question list. Use `j/k` or arrows to choose an item, `Space` to toggle inclusion, `i` to edit, `d` to delete, and `Enter` to send selected questions together. Use `[` / `]` to scroll. In-flight questions cannot be edited or deleted. Successful answers are attached to their original questions and deselected; failures and timeouts preserve drafts for retry.
+
+Questions and answers appear under their source lines as virtual “行質問” comments; they do not change source files or replace existing AI explanations. `c` still toggles only AI explanations. Drafts and answers last for the current session only.
+
+If reanalysis changes a question’s source or position, its inline display and sending are blocked. Close the list, choose the intended code line, reopen the list, select the question, and press `p` to explicitly rebind it. Reloading during generation preserves drafts for retry.
+
+Only project-local functions are supported. External/SDK code shows an unavailable reason, and excluded code is blocked during send preparation. Requests include question IDs, relative paths, function IDs, real line numbers, and question text, plus required function snippets processed through the existing exclusions, redaction, and size limits. Question text is sent verbatim; do not include secrets.

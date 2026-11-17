@@ -211,6 +211,7 @@ func TestVariablePopupScrollIsolation(t *testing.T) {
 		t.Run(fmt.Sprint(conversation), func(t *testing.T) {
 			s.agent = newAgentPane(agentOptions{})
 			s.agent.visible = conversation
+			s.agent.followTail = false
 			s.agent.text = "saved conversation"
 			s.explanationTop = 2
 			s.variableTop = 0

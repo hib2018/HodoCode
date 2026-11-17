@@ -11,15 +11,81 @@ func uiPaint(text, style string, color bool) string {
 
 func (s *screen) paneTitle() string {
 	if s.agent == nil || !s.agent.visible {
-		return "構文の解説 · LOCAL"
+		return "構文"
 	}
 	if s.agent.lineReview {
-		return "行質問 · 下書きと回答"
+		if s.agent.cancel != nil {
+			return "行質問 · 生成中"
+		}
+		return "行質問"
 	}
 	if s.agent.cancel != nil {
-		return "AGENT  解説を生成中"
+		return "チャット · 生成中"
 	}
-	return "AGENT  エージェントの解説"
+	return "チャット"
+}
+
+func (s *screen) help(width int) string {
+	if s.agent != nil && s.agent.input != nil {
+		action := "送信"
+		if s.agent.input.line != 0 || s.agent.input.draft != nil {
+			action = "保存"
+		}
+		for _, keys := range []string{
+			" Alt+Enter/Ctrl+J:改行 Esc:取消 ←/→:移動 Ctrl+U/K:削除",
+			" Alt+Enter/Ctrl+J:改行 Esc:取消",
+			" ^J:改行 Esc:取消",
+		} {
+			help := " Enter:" + action + keys
+			if displayWidth(help) <= width {
+				return help
+			}
+		}
+		return displaySlice(" Enter:"+action+" Esc:取消", 0, width)
+	}
+	if s.agent == nil || !s.agent.visible || !s.agent.lineReview {
+		help := screenHelp(width)
+		extra := " f:末尾 </>:幅"
+		if s.agent != nil && s.agent.cancel != nil {
+			extra = " x:中止" + extra
+			if displayWidth(help+extra) > width {
+				help = " /検索 x:中止 q 終了"
+				extra = " f:末尾 </>:幅"
+			}
+		}
+		if displayWidth(help+extra) <= width {
+			help = strings.Replace(help, " q 終了", extra+" q 終了", 1)
+		}
+		return help
+	}
+	if len(s.agent.questions) == 0 {
+		if s.agent.cancel != nil {
+			return displaySlice(" C:閉じる x:中止 q 終了", 0, width)
+		}
+		help := " Cで閉じて a:質問 / ?:これは何？ q 終了"
+		if displayWidth(help) <= width {
+			return help
+		}
+		return displaySlice(" C:閉じる q 終了", 0, width)
+	}
+	extra := " </>:幅"
+	if s.agent.cancel != nil {
+		extra = " x:中止" + extra
+	}
+	for _, help := range []string{
+		" C:閉じる j/k:選択 Space:送信対象 i:編集 d:削除 p:再指定（Cで閉じてコード行を選択） Enter:選択分を送信",
+		" C:閉じる j/k:選択 Space:対象 i:編集 d:削除 p:再指定 Enter:送信",
+		" C:閉じる j/k:選択 i:編集 Enter:送信",
+		" C:閉じる Enter:送信",
+	} {
+		if displayWidth(help+extra+" q 終了") <= width {
+			return help + extra + " q 終了"
+		}
+	}
+	if s.agent.cancel != nil {
+		return displaySlice(" C:閉じる x:中止 q 終了", 0, width)
+	}
+	return displaySlice(" C:閉じる q 終了", 0, width)
 }
 
 func screenHelp(width int) string {
@@ -50,9 +116,6 @@ func paneTextLine(text string, width int, color bool) string {
 		style = "38;5;245"
 	}
 	if strings.HasPrefix(text, "https://go.dev/") {
-		style = "38;5;245"
-	}
-	if text == "構文の解説" || strings.HasPrefix(text, "カーソル位置") {
 		style = "38;5;245"
 	}
 	return uiPaint(displaySlice(text, 0, width), style, color)

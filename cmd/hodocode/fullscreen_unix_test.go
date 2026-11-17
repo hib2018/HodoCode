@@ -194,7 +194,7 @@ func TestFullScreenTerminal(t *testing.T) {
 				if !strings.HasPrefix(text, terminalScreenEnter) || !strings.HasSuffix(text, terminalScreenLeave) {
 					t.Errorf("alternate screen/cursor not entered and restored: %q", text)
 				}
-				if !strings.Contains(plain, "\x1b[1;1H HodoCode  main.go:34-37") || !strings.Contains(plain, "35 │") {
+				if !strings.Contains(plain, "\x1b[1;1H main.go:34-37") || !strings.Contains(plain, "35 │") {
 					t.Error("source header or line numbers missing")
 				}
 				if strings.Contains(plain, "Tab:") || strings.Contains(plain, "│main.go:34-37") {

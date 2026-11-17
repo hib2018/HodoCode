@@ -164,7 +164,7 @@ func TestAgentImmediateTwoCallsAndNavigationCache(t *testing.T) {
 	if !strings.Contains(prompts[1], "func First()") || !strings.Contains(prompts[1], "println") || strings.Contains(prompts[1], "func Second()") {
 		t.Fatal("answer request did not contain only selected sanitized source")
 	}
-	if s.current != other || s.explanationTop != 0 {
+	if s.current != other || s.explanationTop != 3 {
 		t.Fatal("background result lost navigation or did not focus shared chat")
 	}
 	pane := strings.Join(s.paneLines(100, 10), "\n")
@@ -172,7 +172,7 @@ func TestAgentImmediateTwoCallsAndNavigationCache(t *testing.T) {
 		t.Fatal("shared answer did not identify the original target")
 	}
 	press(t, s, "b")
-	if !strings.Contains(strings.Join(s.paneLines(100, 10), "\n"), result.text) || !strings.Contains(s.agent.text, "エージェントの解説") {
+	if !strings.Contains(strings.Join(s.paneLines(100, 10), "\n"), result.text) || s.agent.text != "" {
 		t.Fatal("returning to the original function did not show its cached answer")
 	}
 }
@@ -340,7 +340,7 @@ func TestAgentTimeout(t *testing.T) {
 	if !errors.Is(result.err, context.DeadlineExceeded) || calls.Load() != 1 {
 		t.Fatalf("timeout result=%+v calls=%d", result, calls.Load())
 	}
-	if s.explanationTop != 0 || !strings.Contains(s.agent.text, "解説に失敗") || !strings.Contains(s.agent.text, "context deadline exceeded") {
+	if s.explanationTop != 7 || !strings.Contains(s.agent.text, "解説に失敗") || !strings.Contains(s.agent.text, "context deadline exceeded") {
 		t.Fatalf("timeout was not displayed: %q", s.agent.text)
 	}
 }

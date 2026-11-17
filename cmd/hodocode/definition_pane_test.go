@@ -40,7 +40,7 @@ func TestDefinitionPaneSourcesAndFallback(t *testing.T) {
 	pointDefinition(t, s, "_ = 名前", "名前")
 	before := s.screenPosition
 	pane := strings.Join(s.explanationLines(100, 20), "\n")
-	for _, want := range []string{"外部送信なし", "main.go", "4 │", "名前 := []Item{{Name: `original`}}", "types.go", "2 │ type Item struct {", "3 │     Name string"} {
+	for _, want := range []string{"main.go", "4 │", "名前 := []Item{{Name: `original`}}", "types.go", "2 │ type Item struct {", "3 │     Name string"} {
 		if !strings.Contains(pane, want) {
 			t.Errorf("missing %q: %s", want, pane)
 		}

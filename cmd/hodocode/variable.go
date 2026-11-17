@@ -71,7 +71,7 @@ func (s *screen) renderVariable(width, height int, color bool) string {
 		s.tree != nil && s.tree.visible || s.agent != nil && s.agent.input != nil {
 		return ""
 	}
-	body, codeWidth := height-3, screenCodeWidth(width)
+	body, codeWidth := height-3, s.codeWidth(width)
 	cursor := s.cursorVisualRow(codeWidth) - s.top
 	if cursor < 0 || cursor >= body {
 		return ""

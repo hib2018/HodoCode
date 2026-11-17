@@ -101,6 +101,7 @@ func (s *screen) reload(height, width int) error {
 		return err
 	}
 	next.nvimServer = s.nvimServer
+	next.notePercent = s.notePercent
 	if s.agent != nil {
 		if s.agent.cancel != nil {
 			s.agent.cancel()
@@ -113,6 +114,7 @@ func (s *screen) reload(height, width int) error {
 		}
 		next.agent.history = append([]agentMessage(nil), s.agent.history...)
 		next.agent.scroll = s.agent.scroll
+		next.agent.followTail, next.agent.unread = s.agent.followTail, s.agent.unread
 		next.agent.commentsHidden = s.agent.commentsHidden
 		next.agent.comments = s.agent.comments
 		next.agent.revalidateComments(p)

@@ -114,8 +114,8 @@ func TestSyntaxExplanationCursor(t *testing.T) {
 			if !strings.Contains(got, tt.want) {
 				t.Fatalf("want %q in %s", tt.want, got)
 			}
-			if !strings.Contains(got, "外部送信なし") {
-				t.Fatal(got)
+			if strings.Contains(got, "カーソル位置") {
+				t.Fatal("redundant cursor heading", got)
 			}
 		})
 	}
@@ -123,11 +123,11 @@ func TestSyntaxExplanationCursor(t *testing.T) {
 	s.code = []string{"999 │ 名前 := 12 + 3"}
 	s.horizontal = 20
 	s.cursorRow, s.cursorColumn = 0, 9
-	if got := strings.Join(s.explanationLines(200, 10), "\n"); !strings.Contains(got, "\n+\n") {
+	if got := strings.Join(s.explanationLines(200, 10), "\n"); !strings.HasPrefix(got, "+\n") {
 		t.Fatal(got)
 	}
 	s.top = 1
-	if got := strings.Join(s.explanationLines(200, 10), "\n"); !strings.Contains(got, "\n+\n") {
+	if got := strings.Join(s.explanationLines(200, 10), "\n"); !strings.HasPrefix(got, "+\n") {
 		t.Fatal(got)
 	}
 }
@@ -150,7 +150,6 @@ func TestSyntaxExplanationLayout(t *testing.T) {
 	s.cursorRow, s.cursorColumn = 0, 0
 	help := syntaxTopics["func_decl"]
 	want := []string{
-		"カーソル位置（外部送信なし）", "",
 		"func", help.category + " · " + help.title, fmt.Sprintf("%d行 1列", s.p.Functions[s.current].Line), "",
 		"意味", help.description, "", "書き方", help.syntax, "", "使用例", help.example, "", "注意点", help.caution, "", "公式リファレンス", help.reference,
 	}
@@ -172,7 +171,7 @@ func TestSyntaxExplanationLayout(t *testing.T) {
 	}
 	// Quoted source literals must stay on one logical heading, even with controls.
 	s.explanations = sourceExplanations("`あ\n\tい`")
-	if got := s.explanationLines(200, 10); got[2] != fmt.Sprintf("%q", "`あ\n\tい`") {
+	if got := s.explanationLines(200, 10); got[0] != fmt.Sprintf("%q", "`あ\n\tい`") {
 		t.Fatalf("literal heading = %q", got)
 	}
 }
@@ -182,7 +181,7 @@ func TestSyntaxExplanationPane(t *testing.T) {
 	s := testScreen(t, "Recur")
 	press(t, s, "g", "0")
 	frame := s.render(120, 18, false)
-	if screenCodeWidth(120) != 77 || strings.Count(frame, "構文の解説") != 1 || !strings.Contains(frame, " │  func") {
+	if screenCodeWidth(120) != 77 || strings.Contains(frame, "構文の解説") || !strings.Contains(frame, "構文") || !strings.Contains(frame, " │  func") {
 		t.Fatal(frame)
 	}
 	if strings.Contains(frame, "\x1b[0m") {

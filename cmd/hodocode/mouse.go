@@ -100,7 +100,7 @@ func (s *screen) handleMouse(event mouseEvent, width, height int) bool {
 	if width < 41 || height < 8 || event.x < 1 || event.x > width || event.y < 2 || event.y > height-2 || (s.tree != nil && s.tree.visible) {
 		return false
 	}
-	body, codeWidth := height-3, screenCodeWidth(width)
+	body, codeWidth := height-3, s.codeWidth(width)
 	rows := s.displayRows(codeWidth)
 	if event.delta == 0 {
 		if event.x > codeWidth || s.search.input != nil || s.agent != nil && s.agent.input != nil {
@@ -124,13 +124,22 @@ func (s *screen) handleMouse(event mouseEvent, width, height int) bool {
 	if event.x <= codeWidth+3 {
 		return false
 	}
+	noteWidth := width - codeWidth - 5
+	prompt, _, _ := s.chatPrompt(noteWidth, body)
+	body -= len(prompt)
 	var notes []string
 	if s.agent == nil || !s.agent.visible {
-		notes, _ = s.localExplanation(width/3-2, body)
+		notes, _ = s.localExplanation(noteWidth, body)
 	} else {
-		notes, _ = s.paneContent(width/3-2, body)
+		notes, _ = s.paneContent(noteWidth, body)
+	}
+	if s.agent != nil && s.agent.visible && !s.agent.lineReview {
+		s.agent.followTail = false
 	}
 	s.explanationTop = max(0, min(max(0, len(notes)-body), s.explanationTop+event.delta))
+	if s.agent != nil && s.agent.visible && !s.agent.lineReview && s.explanationTop == max(0, len(notes)-body) {
+		s.agent.followTail, s.agent.unread = true, false
+	}
 	return true
 }
 

@@ -61,7 +61,7 @@ func (s *screen) lineQuestionKey(ctx context.Context, key string) bool {
 			s.explanationTop = max(0, s.explanationTop-10)
 		case "pagedown":
 			s.explanationTop += 10
-		case "[", "]", "q", "\x03", "\x04":
+		case "[", "]", "x", "<", ">", "q", "\x03", "\x04":
 			return false
 		default:
 			return true
@@ -122,12 +122,12 @@ func (s *screen) saveLineQuestion(in *agentInput) {
 
 func (s *screen) questionLines(width, height int) []string {
 	a := s.agent
-	lines := wrapPaneText("行質問 · C:閉じる j/k:選択 Space:送信対象 i:編集 d:削除 p:現在のコード行へ再指定 Enter:選択分を送信\n再指定先は一覧を閉じてコード上で選択してください。", width)
+	var lines []string
 	if s.notice != "" {
 		lines = append(lines, wrapPaneText(s.notice, width)...)
 	}
 	if len(a.questions) == 0 {
-		return append(lines, "下書きなし · Cで閉じて a:行質問入力 / ?:これは何？")
+		return append(lines, "下書きなし")
 	}
 	selectedTop := 0
 	for i, d := range a.questions {

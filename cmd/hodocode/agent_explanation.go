@@ -44,7 +44,7 @@ type agentPane struct {
 	results                       chan agentResult
 	cancel                        context.CancelFunc
 	history                       []agentMessage
-	focusReply                    bool
+	followTail, unread, stopping  bool
 	scroll                        int
 	input                         *agentInput
 	comments                      map[string]functionComments
@@ -52,7 +52,7 @@ type agentPane struct {
 }
 
 func newAgentPane(options agentOptions) *agentPane {
-	return &agentPane{options: options, results: make(chan agentResult, 1), comments: make(map[string]functionComments)}
+	return &agentPane{options: options, results: make(chan agentResult, 1), followTail: true, comments: make(map[string]functionComments)}
 }
 
 // All pane state stays on the screen loop; the worker only owns its snapshot.
@@ -65,6 +65,24 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 		return true
 	}
 	switch key {
+	case "<", ">":
+		delta := -5
+		if key == ">" {
+			delta = 5
+		}
+		s.notePercent = max(25, min(70, s.panePercent()+delta))
+	case "x":
+		if a.cancel == nil {
+			return false
+		}
+		a.stopping = true
+		a.text = "中断中…"
+		a.cancel()
+	case "f":
+		if !a.visible || a.lineReview {
+			return false
+		}
+		a.followTail, a.unread = true, false
 	case "c":
 		a.commentsHidden = !a.commentsHidden
 	case "s":
@@ -83,9 +101,7 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 			return true
 		}
 		if a.cancel != nil {
-			a.focusReply = false
-			a.text = "生成中は解説を生成できません。完了してから E を押してください。"
-			s.explanationTop = 0
+			a.text = "生成中…"
 			return true
 		}
 		s.startAgentRequest(ctx, s.current, "表示中の関数の解説を生成してください。", true)
@@ -94,9 +110,7 @@ func (s *screen) agentKey(ctx context.Context, key string) bool {
 			return false
 		}
 		if a.cancel != nil {
-			a.focusReply = false
-			a.text = "生成中は追加指示を入力できません。完了してから i を押してください。"
-			s.explanationTop = 0
+			a.text = "生成中…"
 			return true
 		}
 		if a.input == nil {
@@ -117,7 +131,6 @@ func (s *screen) startAgentRequest(ctx context.Context, id, question string, inl
 	if a.cancel != nil {
 		return
 	}
-	a.focusReply = false
 	var edges []analyze.Edge
 	for _, edge := range s.flow.edges {
 		if edge.From == id {
@@ -152,8 +165,7 @@ func (s *screen) startAgentRequest(ctx context.Context, id, question string, inl
 	a.history = append(a.history, agentMessage{id: id, Message: explain.Message{Role: "user", Content: question}})
 	jobCtx, cancel := context.WithTimeout(ctx, a.options.timeout)
 	a.cancel = cancel
-	a.text = "エージェントが解説を生成中です。\n対象: " + id + "\nコード移動可 / q:終了して中断"
-	s.explanationTop = 0
+	a.text = "生成中…"
 	runner, results := a.options.runner, a.results
 	go func() {
 		defer cancel()
@@ -176,6 +188,14 @@ func (s *screen) receiveAgentResult() bool {
 	case result := <-s.agent.results:
 		a := s.agent
 		a.cancel = nil
+		if a.stopping {
+			a.stopping = false
+			a.text = "生成を中断しました。"
+			if len(result.questions) > 0 {
+				s.receiveLineAnswers(agentResult{questions: result.questions, err: context.Canceled})
+			}
+			return true
+		}
 		if len(result.questions) > 0 {
 			s.receiveLineAnswers(result)
 			return true
@@ -187,12 +207,10 @@ func (s *screen) receiveAgentResult() bool {
 				s.storeComments(&result)
 			}
 			a.history = append(a.history, agentMessage{id: result.id, comments: result.comments, Message: explain.Message{Role: "assistant", Content: result.text}})
-			a.focusReply = true
-			a.text = "エージェントの解説 · コードと照合してください\ni:質問  E:再生成  c:行解説  s:構文\nコメント修正: i → /comments 指示"
+			a.text = ""
 		}
-		a.scroll = 0
-		if a.visible {
-			s.explanationTop = 0
+		if !a.followTail {
+			a.unread = true
 		}
 		return true
 	default:
@@ -232,15 +250,8 @@ func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) 
 	if s.agent.lineReview {
 		return s.questionLines(width, height), nil
 	}
-	text := s.agent.text
-	if text == "" {
-		text = fmt.Sprintf("エージェント解説\n%s\ni:追加指示 / E:解説を生成 / s:構文解説\na:行質問 / ?:これは何？ / C:質問一覧", s.current)
-	}
-	if s.agent.comments[s.current].stale {
-		text += "\n" + staleCommentsAdvice
-	}
-	lines := wrapPaneText(text, width)
-	spans := make([][]syntaxHighlight, len(lines))
+	var lines []string
+	var spans [][]syntaxHighlight
 	appendText := func(text, style string) {
 		for _, line := range wrapPaneText(text, width) {
 			lines = append(lines, line)
@@ -251,21 +262,20 @@ func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) 
 			spans = append(spans, highlights)
 		}
 	}
-	lastReply := 0
+	lastTarget := ""
 	for _, message := range s.agent.history {
-		appendText("", "")
-		heading, label, accent := "質問", "利用者", "\x1b[1;38;5;179m"
-		if message.Role == "assistant" {
-			heading, label, accent = "回答", "エージェント", "\x1b[1;38;5;110m"
+		if len(lines) > 0 {
+			appendText("", "")
 		}
-		rule := "── " + heading + " "
-		rule += strings.Repeat("─", max(0, width-displayWidth(rule)))
-		appendText(rule, "\x1b[38;5;240m")
+		if message.id != lastTarget {
+			appendText("対象: "+message.id, "\x1b[38;5;245m")
+			lastTarget = message.id
+		}
+		label, accent := "› 利用者", "\x1b[1;38;5;179m"
 		if message.Role == "assistant" {
-			lastReply = len(lines)
+			label, accent = "• エージェント", "\x1b[1;38;5;110m"
 		}
 		appendText(label, accent)
-		appendText("対象: "+message.id, "\x1b[38;5;245m")
 		if message.Role == "assistant" {
 			body, styles := markdownLines(message.Content, width)
 			lines = append(lines, body...)
@@ -274,15 +284,21 @@ func (s *screen) paneContent(width, height int) ([]string, [][]syntaxHighlight) 
 			appendText(message.Content, "")
 		}
 	}
-	// Leave room below a short reply so its first line can stay at the top.
-	if lastReply > 0 {
-		for len(lines) < lastReply+height {
-			lines = append(lines, "")
-			spans = append(spans, nil)
-		}
-		if s.agent.focusReply {
-			s.explanationTop = lastReply
-			s.agent.focusReply = false
+	if s.agent.text != "" {
+		appendText(s.agent.text, "")
+	}
+	if s.agent.comments[s.current].stale {
+		appendText(staleCommentsAdvice, "")
+	}
+	if len(lines) == 0 {
+		appendText("E:解説を生成 · i:質問", "")
+	}
+	if s.agent.followTail {
+		top := max(0, len(lines)-height)
+		if s.agent.visible {
+			s.explanationTop = top
+		} else {
+			s.agent.scroll = top
 		}
 	}
 	return lines, spans

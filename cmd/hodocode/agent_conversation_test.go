@@ -61,7 +61,7 @@ func TestAgentConversationPreservesAnswersAndFailures(t *testing.T) {
 		}
 	}
 	notes := s.paneLines(100, 8)
-	if notes[s.explanationTop] != "エージェント" || notes[s.explanationTop+2] != "FOLLOWUP_ANSWER" {
+	if s.explanationTop != max(0, len(notes)-8) || !strings.Contains(strings.Join(notes[s.explanationTop:], "\n"), "FOLLOWUP_ANSWER") {
 		t.Fatal("new reply did not start at the top with its target")
 	}
 	top := s.explanationTop
@@ -105,6 +105,7 @@ func TestAgentConversationSyntaxChatRestoresIndependentScroll(t *testing.T) {
 	agentTestKey(t, s, "E")
 	agentTestResult(t, s)
 	s.paneLines(40, 10)
+	s.agent.followTail = false
 	s.explanationTop = 12
 	history := append([]agentMessage(nil), s.agent.history...)
 	for i := 0; i < 2; i++ {

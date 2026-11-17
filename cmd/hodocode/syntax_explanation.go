@@ -154,7 +154,7 @@ func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighli
 				source := strings.ReplaceAll(snippet.Source, "\t", "    ")
 				highlights := sourceHighlights(source, snippet.Line)
 				for row, raw := range strings.Split(source, "\n") {
-					textStyles[len(prefix)+2] = highlights[row]
+					textStyles[len(prefix)] = highlights[row]
 					prefix = append(prefix, fmt.Sprintf("%d │ %s", snippet.Line+row, strings.TrimSuffix(raw, "\r")))
 				}
 				prefix = append(prefix, "")
@@ -171,7 +171,6 @@ func (s *screen) localExplanation(width, height int) ([]string, [][]syntaxHighli
 			}
 		}
 	}
-	texts = append([]string{"カーソル位置（外部送信なし）", ""}, texts...)
 	width = max(1, width)
 	for index, block := range texts {
 		for _, text := range strings.Split(block, "\n") {

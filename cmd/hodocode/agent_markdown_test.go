@@ -248,6 +248,7 @@ func TestMarkdownRejectsTerminalControls(t *testing.T) {
 func TestMarkdownPaneOnlyFormatsAssistantAndPreservesHistory(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	s.agent.visible = true
+	s.agent.followTail = false
 	s.agent.text = "status **literal**"
 	s.agent.history = []agentMessage{
 		{id: s.current, Message: explain.Message{Role: "user", Content: "user **literal** `code`"}},
@@ -281,7 +282,7 @@ func TestMarkdownFullscreenUsesAssistantSpans(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	s.agent.visible = true
 	s.agent.history = []agentMessage{{id: s.current, Message: explain.Message{Role: "assistant", Content: "**MARKDOWN_REPLY** plain"}}}
-	s.agent.focusReply = true
+	s.agent.followTail = true
 	if got := s.render(120, 20, true); !strings.Contains(got, "\x1b[1mMARKDOWN_REPLY\x1b[0m plain") {
 		t.Fatalf("fullscreen did not apply Markdown spans: %q", got)
 	}
@@ -296,13 +297,14 @@ func TestMarkdownReplyFocusAndIndependentSyntaxScroll(t *testing.T) {
 	agentTestKey(t, s, "e")
 	s.agent.input = nil
 	s.agent.history = []agentMessage{{id: s.current, Message: explain.Message{Role: "assistant", Content: "# Reply\n**answer**"}}}
-	s.agent.focusReply = true
+	s.agent.followTail = true
 	lines, spans := s.paneContent(40, 10)
 	checkMarkdownOutput(t, lines, spans, 40)
 	top := s.explanationTop
-	if top >= len(lines) || lines[top] != "エージェント" || len(lines) < top+10 || s.agent.focusReply {
+	if top != max(0, len(lines)-10) || len(lines) > 10 && top == 0 {
 		t.Fatalf("reply was not focused/padded: top=%d lines=%q", top, lines)
 	}
+	s.agent.followTail = false
 	s.explanationTop = top + 1
 	s.paneContent(40, 10)
 	if s.explanationTop != top+1 {
@@ -338,7 +340,7 @@ func TestAgentChatVisualHierarchy(t *testing.T) {
 					t.Fatalf("rule not fitted/styled: %q", line)
 				}
 			}
-			if line == "利用者" || line == "エージェント" {
+			if strings.HasPrefix(line, "› ") || strings.HasPrefix(line, "• ") {
 				roles++
 				if len(spans[i]) != 1 || !strings.Contains(spans[i][0].style, "[1;") {
 					t.Fatalf("role not emphasized: %q", line)
@@ -354,7 +356,7 @@ func TestAgentChatVisualHierarchy(t *testing.T) {
 				t.Fatal("user body got role styling")
 			}
 		}
-		if roles != 2 || metadata != 2 || rules != 2 {
+		if roles != 2 || metadata != 1 || rules != 0 {
 			t.Fatalf("missing hierarchy: %q", lines)
 		}
 	}

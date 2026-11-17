@@ -46,6 +46,7 @@ type screen struct {
 	search                      codeSearch
 	nvimServer                  string
 	notice                      string
+	notePercent                 int
 }
 
 func newScreen(p *analyze.Project, name string, expansions []string) (*screen, error) {
@@ -246,8 +247,14 @@ func (s *screen) key(key string, height, codeWidth int) (bool, error) {
 		s.explanationTop = 0
 		s.follow(height, codeWidth)
 	case "[":
+		if s.agent != nil && s.agent.visible {
+			s.agent.followTail = false
+		}
 		s.explanationTop = max(0, s.explanationTop-1)
 	case "]":
+		if s.agent != nil && s.agent.visible {
+			s.agent.followTail = false
+		}
 		s.explanationTop++
 	case "pageup", "pagedown":
 		delta := height
@@ -381,8 +388,8 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		return b.String()
 	}
 	body := height - 3
-	codeWidth := screenCodeWidth(width)
-	noteWidth := width / 3
+	codeWidth := s.codeWidth(width)
+	noteWidth := width - codeWidth - 3
 	rows := s.displayRows(codeWidth)
 	s.top = max(0, min(s.top, max(0, len(rows)-body)))
 	longest := 0
@@ -395,17 +402,19 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		b.WriteString(uiPaint(displaySlice(text, 0, width), style, emphasis))
 	}
 	fmt.Fprintf(&b, "\x1b[1;1H")
-	b.WriteString(uiPaint(displaySlice(" HodoCode  "+s.location, 0, codeWidth), "1;38;5;252;48;5;237", emphasis))
+	b.WriteString(uiPaint(displaySlice(" "+s.location, 0, codeWidth), "1;38;5;252;48;5;237", emphasis))
 	b.WriteString(uiPaint(" │ ", "38;5;240;48;5;237", emphasis))
 	b.WriteString(uiPaint(displaySlice(" "+s.paneTitle(), 0, noteWidth), "1;38;5;110;48;5;237", emphasis))
+	prompt, _, _ := s.chatPrompt(noteWidth-2, body)
+	noteBody := body - len(prompt)
 	var notes []string
 	var noteSyntax [][]syntaxHighlight
 	if s.agent == nil || !s.agent.visible {
 		notes, noteSyntax = s.localExplanation(noteWidth-2, body)
 	} else {
-		notes, noteSyntax = s.paneContent(noteWidth-2, body)
+		notes, noteSyntax = s.paneContent(noteWidth-2, noteBody)
 	}
-	s.explanationTop = min(s.explanationTop, max(0, len(notes)-body))
+	s.explanationTop = max(0, min(s.explanationTop, max(0, len(notes)-noteBody)))
 	for i := 0; i < body; i++ {
 		fmt.Fprintf(&b, "\x1b[%d;1H", i+2)
 		if row := s.top + i; row < len(rows) {
@@ -425,12 +434,15 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		}
 		b.WriteString(uiPaint(" │ ", "38;5;240", emphasis))
 		note := ""
-		if index := s.explanationTop + i; index < len(notes) {
+		if index := s.explanationTop + i; i < noteBody && index < len(notes) {
 			note = notes[index]
 		}
 		rendered := paneTextLine(note, noteWidth-2, emphasis)
-		if index := s.explanationTop + i; emphasis && index < len(noteSyntax) && len(noteSyntax[index]) > 0 {
+		if index := s.explanationTop + i; emphasis && i < noteBody && index < len(noteSyntax) && len(noteSyntax[index]) > 0 {
 			rendered = styledSlice(note, 0, noteWidth-2, noteSyntax[index])
+		}
+		if i >= noteBody {
+			rendered = paneTextLine(prompt[i-noteBody], noteWidth-2, emphasis)
 		}
 		b.WriteString(" " + rendered + " ")
 	}
@@ -459,8 +471,8 @@ func (s *screen) render(width, height int, emphasis bool) string {
 		status = s.searchStatus()
 		mode = " SEARCH  "
 	}
-	progress := fmt.Sprintf(" %d%% · 解説 %d/%d ", (s.cursorRow+1)*100/max(1, len(s.code)), s.explanationTop+1, max(1, len(notes)-body+1))
-	help := screenHelp(width)
+	progress := fmt.Sprintf(" %d%% · 解説 %d/%d ", (s.cursorRow+1)*100/max(1, len(s.code)), s.explanationTop+1, max(1, len(notes)-noteBody+1))
+	help := s.help(width)
 	if s.search.query != "" {
 		help = " ^N/P:次/前  /:再検索  Esc:検索終了"
 	}
@@ -648,22 +660,26 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		}
 		if width != lastWidth || height != lastHeight {
 			if lastWidth == 0 && height >= 8 && width >= 41 && (s.tree == nil || !s.tree.visible) {
-				s.followCursor(height-3, screenCodeWidth(width))
+				s.followCursor(height-3, s.codeWidth(width))
 			}
 			dirty = true
 			lastWidth, lastHeight = width, height
 		}
 		if dirty {
 			frame := "\x1b[?25l" + s.render(width, height, bold)
-			cursor := s.cursorVisualRow(screenCodeWidth(width))
+			cursor := s.cursorVisualRow(s.codeWidth(width))
 			if width >= 41 && height >= 8 && (s.tree == nil || !s.tree.visible) &&
 				cursor >= s.top && cursor < s.top+height-3 &&
-				s.cursorCell() >= s.horizontal && s.cursorCell() < s.horizontal+screenCodeWidth(width) {
+				s.cursorCell() >= s.horizontal && s.cursorCell() < s.horizontal+s.codeWidth(width) {
 				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", cursor-s.top+2, s.cursorCell()-s.horizontal+1)
 			}
 			if s.search.input != nil && width >= 41 && height >= 8 {
 				column := 10 + min(displayWidth("/"+s.search.input.text), width-10)
 				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", height-1, column)
+			}
+			if s.agent != nil && s.agent.visible && !s.agent.lineReview && s.agent.input != nil && s.agent.input.line == 0 && width >= 41 && height >= 8 {
+				prompt, row, column := s.chatPrompt(width-s.codeWidth(width)-5, height-3)
+				frame += fmt.Sprintf("\x1b[%d;%dH\x1b[?25h", height-1-len(prompt)+row, s.codeWidth(width)+5+column)
 			}
 			if overlay := s.renderAgentInput(width, height, bold); overlay != "" {
 				frame += "\x1b[?25l" + overlay
@@ -683,7 +699,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 		if !ok {
 			if mouse.pending == "\x1b" {
 				mouse.pending = ""
-				if !s.searchInputByte(0x1b, max(1, height-3), max(1, screenCodeWidth(width))) && !s.agentInputByte(ctx, 0x1b) {
+				if !s.searchInputByte(0x1b, max(1, height-3), max(1, s.codeWidth(width))) && !s.agentInputByte(ctx, 0x1b) {
 					decoder.feed(0x1b)
 				}
 			} else if mouse.pending != "" {
@@ -720,7 +736,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 			dirty = s.handleMouse(*event, width, height) || dirty
 		}
 		for _, b := range []byte(text) {
-			if s.searchInputByte(b, max(1, height-3), max(1, screenCodeWidth(width))) {
+			if s.searchInputByte(b, max(1, height-3), max(1, s.codeWidth(width))) {
 				dirty = true
 				continue
 			}
@@ -742,7 +758,7 @@ func screenLoop(ctx context.Context, s *screen, out io.Writer, read func() (byte
 				dirty = true
 				continue
 			}
-			done, err := s.key(key, height-3, screenCodeWidth(width))
+			done, err := s.key(key, height-3, s.codeWidth(width))
 			if err != nil {
 				return err
 			}

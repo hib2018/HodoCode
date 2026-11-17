@@ -14,6 +14,8 @@ type agentInput struct {
 	draft                             *lineDraft
 	lineSnapshot                      commentSnapshot
 	line                              int
+	cursor                            int
+	cursorSet                         bool
 	id, text, partial, escape, status string
 }
 
@@ -23,26 +25,38 @@ func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 		return false
 	}
 	a, in := s.agent, s.agent.input
+	in.initCursor()
 	if b == 3 || b == 4 {
 		a.input = nil
 		return false // Let the global quit handler receive Ctrl+C/D.
 	}
 	if in.escape != "" {
 		if in.escape == "\x1b" {
-			if b == '[' || b == 'O' {
+			switch b {
+			case '[', 'O':
 				in.escape += string(b)
-			} else {
+			case '\r', '\n':
+				in.escape = ""
+				in.insert("\n")
+			default:
 				a.input = nil
 			}
-		} else if b >= 0x40 && b <= 0x7e {
-			in.escape = ""
+		} else {
+			in.escape += string(b)
+			if b >= 0x40 && b <= 0x7e {
+				in.editKey(in.escape)
+				in.escape = ""
+			}
 		}
 		return true
 	}
 	switch b {
 	case 0x1b:
 		in.escape, in.partial = "\x1b", ""
-	case '\r', '\n':
+	case '\n':
+		in.partial = ""
+		in.insert("\n")
+	case '\r':
 		instruction := strings.TrimSpace(in.text)
 		if instruction == "" {
 			in.status = "指示を入力してください。"
@@ -65,13 +79,24 @@ func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 		}
 	case 0x7f, 0x08:
 		in.partial = ""
-		if len(in.text) > 0 {
-			_, size := utf8.DecodeLastRuneInString(in.text)
-			in.text = in.text[:len(in.text)-size]
+		if in.cursor > 0 {
+			_, size := utf8.DecodeLastRuneInString(in.text[:in.cursor])
+			in.text = in.text[:in.cursor-size] + in.text[in.cursor:]
+			in.cursor -= size
 		}
 		in.status = ""
+	case 0x01:
+		in.editKey("\x1b[H")
+	case 0x05:
+		in.editKey("\x1b[F")
 	case 0x15:
-		in.text, in.partial, in.status = "", "", ""
+		start, _ := in.lineBounds()
+		in.text = in.text[:start] + in.text[in.cursor:]
+		in.cursor, in.partial, in.status = start, "", ""
+	case 0x0b:
+		_, end := in.lineBounds()
+		in.text = in.text[:in.cursor] + in.text[end:]
+		in.partial, in.status = "", ""
 	default:
 		in.partial += string([]byte{b})
 		for utf8.FullRuneInString(in.partial) {
@@ -80,15 +105,120 @@ func (s *screen) agentInputByte(ctx context.Context, b byte) bool {
 			if r == utf8.RuneError && size == 1 || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 				continue
 			}
-			if len(in.text)+size > maxAgentPurpose {
-				in.status = "追加指示は8KiB以内にしてください。"
-				continue
-			}
-			in.text += string(r)
-			in.status = ""
+			in.insert(string(r))
 		}
 	}
 	return true
+}
+
+// Existing line-question drafts start with their cursor at the end.
+func (in *agentInput) initCursor() {
+	if !in.cursorSet {
+		in.cursor, in.cursorSet = len(in.text), true
+	}
+}
+
+func (in *agentInput) lineBounds() (int, int) {
+	start := strings.LastIndex(in.text[:in.cursor], "\n") + 1
+	end := len(in.text)
+	if n := strings.IndexByte(in.text[in.cursor:], '\n'); n >= 0 {
+		end = in.cursor + n
+	}
+	return start, end
+}
+
+func (in *agentInput) insert(text string) {
+	if len(in.text)+len(text) > maxAgentPurpose {
+		in.status = "追加指示は8KiB以内にしてください。"
+		return
+	}
+	in.text = in.text[:in.cursor] + text + in.text[in.cursor:]
+	in.cursor += len(text)
+	in.status = ""
+}
+
+func (in *agentInput) editKey(key string) {
+	in.partial = ""
+	switch key {
+	case "\x1b[D", "\x1bOD":
+		if in.cursor > 0 {
+			_, size := utf8.DecodeLastRuneInString(in.text[:in.cursor])
+			in.cursor -= size
+		}
+	case "\x1b[C", "\x1bOC":
+		if in.cursor < len(in.text) {
+			_, size := utf8.DecodeRuneInString(in.text[in.cursor:])
+			in.cursor += size
+		}
+	case "\x1b[H", "\x1bOH", "\x1b[1~", "\x1b[7~":
+		in.cursor, _ = in.lineBounds()
+	case "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~":
+		_, in.cursor = in.lineBounds()
+	case "\x1b[3~":
+		if in.cursor < len(in.text) {
+			_, size := utf8.DecodeRuneInString(in.text[in.cursor:])
+			in.text = in.text[:in.cursor] + in.text[in.cursor+size:]
+		}
+		in.status = ""
+	}
+}
+
+// promptLines returns a cursor-visible viewport, including the prompt prefix.
+// Cursor row and column are zero-based terminal cells, not byte offsets.
+func (in *agentInput) promptLines(width, maxLines int) ([]string, int, int) {
+	in.initCursor()
+	width, maxLines = max(1, width), max(1, maxLines)
+	// Leave one cell for the cursor at logical line endings.
+	wrapWidth := max(1, width-1)
+	prefix := "› "
+	if width < 3 {
+		prefix = ""
+	}
+	text := prefix + in.text
+	cursor := len(prefix) + in.cursor
+	lines := []string{""}
+	row, column, cells := 0, 0, 0
+	for offset, r := range text {
+		if r != '\n' && (unicode.IsControl(r) || unicode.Is(unicode.Cf, r)) {
+			if offset == cursor {
+				row, column = len(lines)-1, cells
+			}
+			continue
+		}
+		n := runeWidth(r)
+		if r != '\n' && n > wrapWidth {
+			r, n = '?', 1
+		}
+		if r != '\n' && cells+n > wrapWidth {
+			lines = append(lines, "")
+			cells = 0
+		}
+		if offset == cursor {
+			row, column = len(lines)-1, cells
+		}
+		if r == '\n' {
+			lines = append(lines, "")
+			cells = 0
+		} else {
+			lines[len(lines)-1] += string(r)
+			cells += n
+		}
+	}
+	if cursor == len(text) {
+		if cells == width {
+			lines = append(lines, "")
+			cells = 0
+		}
+		row, column = len(lines)-1, cells
+	}
+	if column >= width {
+		row, column = row+1, 0
+		if row == len(lines) {
+			lines = append(lines, "")
+		}
+	}
+	start := min(max(0, len(lines)-maxLines), row)
+	return lines[start:min(len(lines), start+maxLines)], row - start, column
 }
 
 // A read timeout distinguishes standalone Escape from an escape sequence.
@@ -106,35 +236,21 @@ func (s *screen) agentInputIdle() bool {
 
 // Append after the main render so the centered box covers the underlying panes.
 func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
-	if s.agent == nil || s.agent.input == nil || width < 6 || height < 4 {
+	if s.agent == nil || s.agent.input == nil || s.agent.input.line == 0 || width < 6 || height < 4 {
 		return ""
 	}
 	color := len(colors) > 0 && colors[0]
 	in := s.agent.input
 	boxWidth := min(76, width)
 	inner := boxWidth - 4
-	target := in.id
-	if slash := strings.LastIndex(target, "/"); slash >= 0 {
-		target = target[slash+1:]
-	}
-	if in.line > 0 {
-		target = fmt.Sprintf("%s:%d", in.lineSnapshot.file, in.line)
-	}
-	target = "対象: " + target
+	target := fmt.Sprintf("対象: %s:%d", in.lineSnapshot.file, in.line)
 	if displayWidth(target) > inner {
 		target = displaySlice(target, 0, inner-1) + "…"
 	}
-	// Reserve one cell at the end so the IME anchor never lands on the border.
-	text := wrapPaneText("› "+in.text+"▏", inner)
-	text[len(text)-1] = strings.TrimSuffix(text[len(text)-1], "▏")
-	cursorColumn := displayWidth(text[len(text)-1])
 	available := max(1, min(8, height-8))
-	if len(text) > available {
-		text = text[len(text)-available:]
-	}
-	cursorLine := len(text) - 1
+	text, cursorLine, cursorColumn := in.promptLines(inner, available)
 	if in.text == "" {
-		text[cursorLine] += "指示を入力してください…"
+		text[0] += "指示を入力してください…"
 	}
 	if height >= 11 {
 		for len(text) < 3 {
@@ -145,18 +261,14 @@ func (s *screen) renderAgentInput(width, height int, colors ...bool) string {
 	if in.status != "" {
 		status = "! " + in.status
 	}
-	safety := "Enterでfxへ送信します"
-	footer := "Enter:送信  Esc:取消  Ctrl+U:消去"
-	title := "追加指示"
+	safety := "保存だけでは送信しません · Cで一覧・送信"
+	footer := "Enter:保存  Esc:取消  Ctrl+U:消去  Alt+Enter:改行"
+	title := "行質問 · 下書き"
 	code := ""
-	if in.line > 0 {
-		title = "行質問 · 下書き"
-		safety, footer = "保存だけでは送信しません · Cで一覧・送信", "Enter:保存  Esc:取消  Ctrl+U:消去"
-		source := strings.Split(in.lineSnapshot.source, "\n")
-		row := in.line - in.lineSnapshot.line
-		if row >= 0 && row < len(source) {
-			code = source[row]
-		}
+	source := strings.Split(in.lineSnapshot.source, "\n")
+	lineIndex := in.line - in.lineSnapshot.line
+	if lineIndex >= 0 && lineIndex < len(source) {
+		code = source[lineIndex]
 	}
 	cursorRow := 4 + cursorLine
 	lines := []string{title, target, code}

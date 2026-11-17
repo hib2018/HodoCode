@@ -124,6 +124,7 @@ func TestMouseAgentScrollAndSwitch(t *testing.T) {
 	s := testScreen(t, "Recur")
 	s.agent = newAgentPane(agentOptions{})
 	s.explanationTop = 2
+	s.agent.followTail = false
 	s.agent.scroll = 3
 	s.agentKey(context.Background(), "e")
 	s.agent.input = nil

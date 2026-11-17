@@ -195,7 +195,7 @@ func TestAgentInputGenerationBlocked(t *testing.T) {
 	_, cancel := context.WithCancel(context.Background())
 	s.agent.cancel = cancel
 	agentTestKey(t, s, "i")
-	if s.agent.input != nil || !s.agent.visible || !strings.Contains(s.agent.text, "生成中は追加指示を入力できません。完了してから i を押してください。") {
+	if s.agent.input != nil || !s.agent.visible || !strings.Contains(s.agent.text, "生成中") {
 		t.Fatal("generation did not block input with visible status")
 	}
 }
@@ -214,7 +214,7 @@ func TestAgentViewOnlyScreenLoop(t *testing.T) {
 			})
 			s.agent.results <- agentResult{id: s.current, text: "EXISTING_ANSWER"}
 			s.receiveAgentResult()
-			s.agent.focusReply = false
+			s.agent.followTail = false
 			status := strings.Repeat("EXISTING_STATUS\n", 30)
 			if generating {
 				_, cancel := context.WithCancel(context.Background())
@@ -278,7 +278,7 @@ func TestAgentInputScreenLoop(t *testing.T) {
 		if len(input) != 0 || s.agent.input != nil || s.agent.cancel != nil || calls.Load() != 0 {
 			t.Fatal("modal did not consume q as text, close, and quit without sending")
 		}
-		for _, want := range []string{"追加指示", "› 日本語q", "Enterでfxへ送信します"} {
+		for _, want := range []string{"対象: screen.First", "› 日本語q", "Enter:送信"} {
 			if !strings.Contains(out.String(), want) {
 				t.Fatalf("screen loop missing %q", want)
 			}
@@ -299,38 +299,18 @@ func TestRenderAgentInput(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "e")
 	agentTestKey(t, s, "i")
-	empty := s.renderAgentInput(100, 24)
-	if !strings.Contains(empty, "› 指示を入力してください…") {
-		t.Fatal("missing entry placeholder")
-	}
 	typeAgentInput(t, s, "日本語q")
-	output := s.renderAgentInput(100, 24)
-	for _, want := range []string{"\x1b[7;13H╭", "追加指示", "対象: screen.First", "› 日本語q", "Enterでfxへ送信します", "Enter:送信  Esc:取消  Ctrl+U:消去", "╰"} {
+	if s.renderAgentInput(100, 24) != "" {
+		t.Fatal("chat input must not overlay code")
+	}
+	output := s.render(100, 24, false)
+	for _, want := range []string{"対象: screen.First", "› 日本語q"} {
 		if !strings.Contains(output, want) {
-			t.Fatalf("missing %q: %q", want, output)
+			t.Fatalf("missing %q", want)
 		}
 	}
-	if strings.Contains(output, s.agent.input.id) || strings.Contains(output, "_") || strings.Contains(output, "▏") {
-		t.Fatal("full target ID or fake caret rendered")
-	}
-	positions := regexp.MustCompile(`\x1b\[\d+;\d+H`)
-	boxPositions := func(text string) string {
-		matches := positions.FindAllString(text, -1)
-		return strings.Join(matches[:len(matches)-1], "")
-	}
-	if boxPositions(empty) != boxPositions(output) {
-		t.Fatal("short text changed modal position or height")
-	}
-	s.agent.input.status = "指示を入力してください。"
-	withError := s.renderAgentInput(100, 24)
-	if !strings.Contains(withError, "! 指示を入力してください。") || boxPositions(withError) != boxPositions(output) {
-		t.Fatal("inline error missing or shifted the modal")
-	}
-	rows := positions.Split(output, -1)[1:]
-	rows = rows[:len(rows)-1] // Final movement positions the real cursor, not a box row.
-	blank := "│ " + strings.Repeat(" ", 72) + " │"
-	if len(rows) != 11 || !strings.Contains(rows[4], "› 日本語q") || rows[5] != blank || rows[6] != blank {
-		t.Fatal("entry area must reserve at least three padded rows")
+	if strings.Contains(output, "╭") {
+		t.Fatal("chat still uses modal")
 	}
 }
 
@@ -338,6 +318,7 @@ func TestRenderAgentInputLayoutBounds(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "e")
 	agentTestKey(t, s, "i")
+	s.agent.input.line = 1
 	s.agent.input.id = "example.com/" + strings.Repeat("非常に長いパッケージ/", 20) + "日本語.対象関数\x1b[2J\n\t\u202e"
 	s.agent.input.status = "エラー\x1b[2J\r\u202e" + strings.Repeat("長い説明", 40)
 	cursor := regexp.MustCompile(`\x1b\[(\d+);(\d+)H`)
@@ -389,6 +370,7 @@ func TestRenderAgentInputNoColor(t *testing.T) {
 	s := agentTestScreen(t, nil)
 	agentTestKey(t, s, "e")
 	agentTestKey(t, s, "i")
+	s.agent.input.line = 1
 	for _, output := range []string{s.renderAgentInput(100, 24), s.renderAgentInput(100, 24, false)} {
 		if regexp.MustCompile(`\x1b\[[0-9;]*m`).MatchString(output) {
 			t.Fatal("default/NO_COLOR rendering contains color escapes")
@@ -408,15 +390,16 @@ func TestRenderAgentInputCursorPosition(t *testing.T) {
 		{"placeholder", "", 100, 24, 11, 17},
 		{"Japanese", "日本語q", 100, 24, 11, 24},
 		{"combining", "e\u0301日", 100, 24, 11, 20},
-		{"wrapped Japanese", strings.Repeat("日", 40), 100, 24, 12, 25},
+		{"wrapped Japanese", strings.Repeat("日", 40), 100, 24, 12, 27},
 		{"short terminal", "日本語q", 100, 8, 4, 24},
 		{"minimal height", "日本語q", 100, 4, 3, 24},
-		{"narrow wrapped", "日本語q", 12, 24, 12, 4},
+		{"narrow wrapped", "日本語q", 12, 24, 12, 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := agentTestScreen(t, nil)
 			agentTestKey(t, s, "e")
 			agentTestKey(t, s, "i")
+			s.agent.input.line = 1
 			typeAgentInput(t, s, tc.text)
 			for _, color := range []bool{false, true} {
 				output := s.renderAgentInput(tc.width, tc.height, color)

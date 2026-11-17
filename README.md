@@ -1,6 +1,6 @@
 # HodoCode
 
-Goコードを読むためのCLI／TUIです。
+Go・Zig・TypeScript・Rust・C・JavaScript・Pythonコードを読むためのCLI／TUIです。
 依存関係図、呼び出し図、構文解説を表示します。
 ローカルとGitHubのリポジトリに対応します。
 
@@ -16,7 +16,8 @@ go build -o hodocode ./cmd/hodocode
 ```
 
 `--root` に解析するリポジトリを指定します。
-複数のGoモジュールにも対応します。
+言語は自動検出します。`--language go|zig|ts|rust|c|js|python` で絞り込めます。
+Go以外は `go.mod` 不要です。複数のGoモジュールにも対応します。
 起点の `main` が一意でなければ、`--func` で関数を選びます。
 
 ## できること
@@ -41,6 +42,21 @@ go build -o hodocode ./cmd/hodocode
 `h/j/k/l` で移動し、`Enter` で呼び出し先へ進みます。
 `b` で戻り、`t` でツリーを開きます。
 `v` でNeovimを開き、`r` で再解析します。`q` で終了します。
+
+## 多言語対応の範囲
+
+| 言語 | 対象 |
+| --- | --- |
+| Zig | `.zig` の関数、`@import`、直接呼び出し |
+| TypeScript | `.ts` の関数、アロー関数、クラスメソッド、import/export |
+| Rust | `.rs` の関数、implメソッド、mod/use |
+| C | `.c`・`.h` の関数定義、`#include` |
+| JavaScript | `.js`・`.mjs`・`.cjs` の関数、アロー関数、メソッド、ES Modules/CommonJS |
+| Python | `.py` の関数、async関数、クラスメソッド、import/from import |
+
+追加言語は保守的な字句・構造解析です。型検査・ビルド・対象コードの実行は行いません。
+確定できない参照は未解決として表示し、言語間の呼び出しは解決しません。
+詳細な限界は[対応範囲](docs/languages.md)を参照してください。
 
 ## AI解説と送信
 

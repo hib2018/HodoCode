@@ -4,7 +4,7 @@
 
 ## Start and analysis scope
 
-HodoCode is a CLI and full-screen TUI for Go repositories. It produces dependency diagrams, function call diagrams, and short explanations with evidence. It supports local and GitHub repositories, including multiple Go modules. It has no external Go dependencies. Go 1.23 or later is required.
+HodoCode is a CLI and full-screen TUI for Go, Zig, TypeScript, Rust, C, JavaScript, and Python repositories. It produces dependency diagrams, function call diagrams, and short explanations with evidence. It supports local and GitHub repositories, including multiple Go modules. It has no external Go dependencies. Go 1.23 or later is required.
 
 ```sh
 go build -o hodocode ./cmd/hodocode
@@ -12,6 +12,8 @@ go build -o hodocode ./cmd/hodocode
 ```
 
 `--root` is the repository or module directory to analyze. It defaults to the current directory. All nested `go.mod` files are detected. The root itself need not contain one. Use the repository root to cover the whole repository. Analysis and diagrams need neither network access nor fx. Check redirection destinations to avoid overwriting existing files.
+
+Language detection defaults to `--language auto`; use `--language go|zig|ts|rust|c|js|python` to select one language. Non-Go projects need no `go.mod`. Added languages use conservative lexical/structural analysis, not type checking or execution. Unproven calls remain unresolved; there is no cross-language call resolution. See [coverage and limits](../languages.md). Descriptions below of type resolution, standard library navigation, and detailed syntax explanations apply to Go.
 
 ## View diagrams and functions with the CLI
 

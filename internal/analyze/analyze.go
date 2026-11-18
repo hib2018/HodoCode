@@ -356,13 +356,14 @@ func (p *Project) CallSites(id string) ([]CallSite, error) {
 	if fn.Body == nil {
 		return nil, nil
 	}
-	info := &types.Info{Uses: map[*ast.Ident]types.Object{}, Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}, Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
 	loader := p.newImporter(id, false)
 	config := types.Config{Importer: loader, Sizes: types.SizesFor(build.Default.Compiler, build.Default.GOARCH), Error: func(error) {}}
 	// Type errors (e.g. unavailable third-party imports) leave partial information;
 	// calls without a proven static target remain unknown rather than being guessed.
 	files, body := p.typeFiles(p.owners[id], fn)
 	_, _ = config.Check(p.owners[id], p.fset, files, info)
+	aliases := goCallAliases(body, fn.Body, info)
 	var sites []CallSite
 	sourceStart := p.fset.PositionFor(fn.Pos(), false).Offset
 	ast.Inspect(body, func(node ast.Node) bool {
@@ -391,6 +392,9 @@ func (p *Project) CallSites(id string) ([]CallSite, error) {
 			object = info.Uses[x]
 		case *ast.SelectorExpr:
 			object = info.Uses[x.Sel]
+		}
+		if target := aliases[object]; target != nil && object.Pos() < call.Pos() {
+			object = target
 		}
 		edge := Edge{From: id, Unknown: true}
 		switch obj := object.(type) {

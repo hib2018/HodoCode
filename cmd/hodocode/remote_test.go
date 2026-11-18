@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/hib2018/HodoCode/internal/semantictest"
 )
 
 type githubTransport func(*http.Request) (*http.Response, error)
@@ -63,6 +65,7 @@ func mockGitHub(t *testing.T) *int {
 }
 
 func TestRemoteCommands(t *testing.T) {
+	semantictest.Use(t)
 	downloads := mockGitHub(t)
 	cache := t.TempDir()
 	for _, tc := range []struct {

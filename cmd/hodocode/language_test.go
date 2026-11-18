@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hib2018/HodoCode/internal/semantictest"
 )
 
 func TestLanguageCommands(t *testing.T) {
+	semantictest.Use(t)
 	root := t.TempDir()
 	for name, source := range map[string]string{
 		"main.py": "import os\ndef helper():\n    return 1\ndef main():\n    helper()\n",

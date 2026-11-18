@@ -5,9 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hib2018/HodoCode/internal/semantictest"
 )
 
 func TestLanguageSubdirectory(t *testing.T) {
+	semantictest.Use(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "src"), 0700); err != nil {
 		t.Fatal(err)

@@ -9,10 +9,12 @@ import (
 	"testing"
 
 	"github.com/hib2018/HodoCode/internal/analyze"
+	"github.com/hib2018/HodoCode/internal/semantictest"
 )
 
 func languageFixture(t *testing.T, language, name, source string) (*analyze.Project, string) {
 	t.Helper()
+	semantictest.Use(t)
 	root := t.TempDir()
 	write(t, root, name, source)
 	p, err := analyze.LoadLanguage(root, language)

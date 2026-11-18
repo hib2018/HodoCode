@@ -15,6 +15,7 @@ import (
 // polyFunction keeps physical byte ranges in the immutable project snapshot.
 type polyFunction struct {
 	file, language, name, owner string
+	semanticMethod              bool
 	start, end, body, bodyEnd   int
 	tokens                      []sourcelex.Token
 	pairs                       map[int]int

@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"os"
@@ -17,6 +18,12 @@ func LoadSubdir(repositoryRoot, subdir string) (*Project, error) {
 
 // LoadSubdirLanguage selects a language within a validated repository subdirectory.
 func LoadSubdirLanguage(repositoryRoot, subdir, language string) (*Project, error) {
+	return LoadSubdirLanguageContext(context.Background(), repositoryRoot, subdir, language)
+}
+
+// LoadSubdirLanguageContext cancels language-server analysis with ctx.
+func LoadSubdirLanguageContext(ctx context.Context, repositoryRoot, subdir, language string) (*Project, error) {
+	if err := ctx.Err(); err != nil { return nil, err }
 	root, err := filepath.Abs(repositoryRoot)
 	if err != nil {
 		return nil, fmt.Errorf("repository root: %w", err)
@@ -47,6 +54,9 @@ func LoadSubdirLanguage(repositoryRoot, subdir, language string) (*Project, erro
 	}
 	p, err := loadPolyglot(selected, root, language)
 	if err != nil {
+		return nil, err
+	}
+	if err := p.analyzeSemantics(ctx); err != nil {
 		return nil, err
 	}
 	relative, err := filepath.Rel(root, selected)

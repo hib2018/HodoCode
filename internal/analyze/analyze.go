@@ -1,11 +1,12 @@
-// Package analyze indexes supported source languages without executing code.
+// Package analyze indexes source snapshots. Non-Go semantic analysis launches
+// external language servers; only analyze trusted projects with trusted tools.
 //
 // Go modules physically inside Root are indexed without fetching dependencies.
 // Go build constraints follow go/build.Default; _test.go, vendor, hidden
 // directories/files and symlinks are excluded. Go SDK navigation and restricted
 // dependency definitions load local source lazily, without builds or downloads.
-// Added languages use conservative lexical/structural indexing and file-local
-// direct-call resolution; unproven and cross-language targets remain unknown.
+// Added languages use language-server symbols/definitions with conservative
+// lexical call extraction; unproven targets remain unknown with candidates.
 package analyze
 
 import (
@@ -47,6 +48,8 @@ type CallSite struct {
 	Line, Column, EndColumn int
 	Offset                  int
 	Name                    string
+	Reason                  string
+	Candidates              []string // Possible local targets; never treated as proven edges.
 }
 
 // Project owns a source snapshot and mutable lazy caches. Serialize analyzer
@@ -55,8 +58,9 @@ type CallSite struct {
 type Project struct {
 	Root string
 	// Language is the requested selection; auto indexes all supported languages.
-	Language string
-	polyglot map[string]polyFunction
+	Language      string
+	polyglot      map[string]polyFunction
+	semanticCalls map[string][]CallSite
 	// Remote snapshot metadata; RepositorySubdir is slash-separated relative to the repository root.
 	RepositoryURL, CommitSHA, RepositorySubdir string
 	// Functions starts with root declarations only. EnsureFunction may add SDK
@@ -75,7 +79,8 @@ type Project struct {
 	importers    map[string]*signatureImporter
 }
 
-// Load automatically indexes supported languages without executing target code.
+// Load automatically indexes supported languages, launching mandatory language
+// servers for non-Go sources. Language servers are not sandboxed.
 // Go source uses the nearest go.mod and retains build-aware canonical import IDs.
 // Other languages require no module manifest and use root-relative file IDs.
 func Load(root string) (*Project, error) {
@@ -299,8 +304,8 @@ func (p *Project) Resolve(name string) (string, error) {
 
 // Calls returns deduplicated one-level edges for an exact function ID. It never
 // traverses callees or nested function literal bodies. Concrete methods resolve
-// to root or SDK IDs without registering SDK targets; interface calls, function
-// values and unresolved symbols are conservative unknowns.
+// to root or SDK IDs without registering SDK targets. Proven immutable local
+// function aliases also resolve; other function values/interfaces remain unknown.
 func (p *Project) Calls(id string) ([]Edge, error) {
 	sites, err := p.CallSites(id)
 	if err != nil {
@@ -334,6 +339,13 @@ func (p *Project) MainFunctions() []string {
 // duplicates, external targets and unknowns, but not function literal bodies.
 // Type conversions and builtins are omitted, as in Calls.
 func (p *Project) CallSites(id string) ([]CallSite, error) {
+	if cached, ok := p.semanticCalls[id]; ok {
+		sites := append([]CallSite(nil), cached...)
+		for i := range sites {
+			sites[i].Candidates = append([]string(nil), sites[i].Candidates...)
+		}
+		return sites, nil
+	}
 	if _, ok := p.polyglot[id]; ok {
 		return p.polyCallSites(id)
 	}

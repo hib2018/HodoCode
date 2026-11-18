@@ -125,7 +125,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	var p *analyze.Project
 	var err error
 	if *repo == "" {
-		p, err = analyze.LoadLanguage(*root, *language)
+		p, err = analyze.LoadLanguageContext(ctx, *root, *language)
 	} else {
 		if *fetchTimeout <= 0 || *maxBytes <= 0 {
 			return fmt.Errorf("--fetch-timeout and --max-bytes must be positive")
@@ -137,7 +137,7 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		if fetchErr != nil {
 			return fetchErr
 		}
-		p, err = analyze.LoadSubdirLanguage(snapshot.Root, *subdir, *language)
+		p, err = analyze.LoadSubdirLanguageContext(ctx, snapshot.Root, *subdir, *language)
 		if err == nil {
 			p.RepositoryURL, p.CommitSHA = snapshot.URL, snapshot.SHA
 		}

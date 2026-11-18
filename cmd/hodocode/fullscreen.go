@@ -143,7 +143,14 @@ func (s *screen) refresh() error {
 
 func (s *screen) reason(site analyze.CallSite) string {
 	if site.Unknown {
-		return "呼び出し先を静的に特定できない"
+		reason := site.Reason
+		if reason == "" {
+			reason = "呼び出し先を静的に特定できない"
+		}
+		if len(site.Candidates) > 0 {
+			reason += "（候補: " + strings.Join(site.Candidates, ", ") + "）"
+		}
+		return reason
 	}
 	if err := s.p.EnsureFunction(site.To); err != nil {
 		return "対象範囲内に利用できるソースがない"

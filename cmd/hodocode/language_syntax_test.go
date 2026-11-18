@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hib2018/HodoCode/internal/analyze"
+	"github.com/hib2018/HodoCode/internal/semantictest"
 )
 
 func TestLanguageSyntaxBasics(t *testing.T) {
@@ -76,6 +77,7 @@ func TestPythonSyntaxRunePositions(t *testing.T) {
 }
 
 func TestLanguageScreenAndReloadSelection(t *testing.T) {
+	semantictest.Use(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("def entry():\n    return 42\n"), 0600); err != nil {
 		t.Fatal(err)
